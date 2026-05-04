@@ -333,6 +333,20 @@ struct LaunchChecklistItem: Identifiable, Codable, Hashable {
     }
 }
 
+enum LaunchTimerState: String, Codable, Hashable {
+    case stopped
+    case running
+    case paused
+
+    var displayName: String {
+        switch self {
+        case .stopped: return "Ready"
+        case .running: return "Running"
+        case .paused: return "Paused"
+        }
+    }
+}
+
 enum FlightAttachmentKind: String, Codable, Hashable {
     case file
     case video

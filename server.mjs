@@ -148,9 +148,9 @@ function convertedNumber(number, role, unit) {
 }
 
 function numberFrom(value, role = "", header = "") {
-  const cleaned = String(value || "").replace(/,/g, "").replace(/[^0-9.-]/g, "").trim();
-  if (!cleaned) return null;
-  const number = convertedNumber(Number(cleaned), role, inferredUnit(value, header));
+  const match = String(value || "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+  if (!match) return null;
+  const number = convertedNumber(Number(match[0]), role, inferredUnit(value, header));
   if (!Number.isFinite(number)) return null;
   if ((role === "altitude" || role === "targetAltitude") && (number < 20 || number > 5000)) return null;
   if (role === "mass" && (number < 1 || number > 5000)) return null;
@@ -346,7 +346,28 @@ function sanitizeOpenAIRows(rows) {
   })).filter((row) => row.altitudeFeet !== null);
 }
 
-async function parseFlightSheetWithOpenAI({ text, fileName }) {
+function mergeFlightRows(primaryRows, backupRows) {
+  const primary = Array.isArray(primaryRows) ? primaryRows : [];
+  const backup = Array.isArray(backupRows) ? backupRows : [];
+  if (!backup.length) return primary;
+  if (!primary.length) return backup;
+
+  const merged = primary.map((row, index) => {
+    const backupRow = backup[index] || {};
+    return Object.fromEntries(Object.keys(flightRowSchema.properties).map((key) => [
+      key,
+      row[key] ?? backupRow[key] ?? null
+    ]));
+  });
+
+  if (primary.length < Math.ceil(backup.length * 0.7)) {
+    return mergeFlightRows(backup, primary);
+  }
+
+  return merged;
+}
+
+async function parseFlightSheetWithOpenAI({ text, fileName, parserRows = [] }) {
   const client = await openAIClient();
   if (!client) return [];
 
@@ -370,18 +391,25 @@ async function parseFlightSheetWithOpenAI({ text, fileName }) {
       "Convert units when obvious: meters to feet for altitude, ounces/pounds/kilograms to grams for mass, Celsius to Fahrenheit, and inches to centimeters for reefed length.",
       "Put parachute diameter/size in parachuteSizeInches and reefed/reefing length in parachuteReefedCentimeters.",
       "Preserve date/time text in flownAtText instead of guessing a new date.",
-      "If the sheet includes egg/payload condition, map it into eggStatus as intact, cracked, broken, not carried, or unknown."
+      "If the sheet includes egg/payload condition, map it into eggStatus as intact, cracked, broken, not carried, or unknown.",
+      "Use the parser draft only as a hint. Correct it when spreadsheet context shows a better column mapping, but keep the same actual flight rows whenever possible."
     ].join(" "),
     input: [
       {
         role: "user",
-        content: `File name: ${fileName}\n\nSpreadsheet text:\n${String(text || "").slice(0, 60000)}`
+        content: [
+          `File name: ${fileName}`,
+          "",
+          `Parser draft rows for comparison:\n${JSON.stringify(parserRows).slice(0, 20000)}`,
+          "",
+          `Spreadsheet text:\n${String(text || "").slice(0, 60000)}`
+        ].join("\n")
       }
     ]
   });
 
   const parsed = safeJSONFromText(response.output_text);
-  return sanitizeOpenAIRows(parsed?.rows);
+  return mergeFlightRows(sanitizeOpenAIRows(parsed?.rows), parserRows);
 }
 
 async function rocketRecommendationWithOpenAI(body) {
@@ -452,13 +480,15 @@ createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${request.headers.host}`);
     if (request.method === "POST" && url.pathname === "/api/import-flight-sheet") {
       const body = await readJSONBody(request);
+      const parserRows = parseFlightSheetText(body.text || "");
       let rows = [];
       let source = "server-parser";
       if (process.env.OPENAI_API_KEY) {
         try {
           rows = await parseFlightSheetWithOpenAI({
             text: body.text || "",
-            fileName: body.fileName || "flight-sheet"
+            fileName: body.fileName || "flight-sheet",
+            parserRows
           });
           source = "openai-structured";
         } catch (error) {
@@ -467,7 +497,7 @@ createServer(async (request, response) => {
         }
       }
       if (rows.length === 0) {
-        rows = parseFlightSheetText(body.text || "");
+        rows = parserRows;
         if (source === "openai-structured") {
           source = "server-parser-openai-empty";
         }

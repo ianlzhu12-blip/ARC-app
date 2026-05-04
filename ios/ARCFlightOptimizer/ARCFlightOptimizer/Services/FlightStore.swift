@@ -9,6 +9,7 @@ final class FlightStore: ObservableObject {
     @Published var targetAltitudeFeet: Double = 800
     @Published var launchWindowSeconds = 45 * 60
     @Published var launchWindowEndsAt: Date?
+    @Published var launchTimerState: LaunchTimerState = .stopped
     @Published var launchChecklistItems: [LaunchChecklistItem] = FlightStore.defaultLaunchChecklistItems
     @Published var profile = UserProfile()
     @Published var personalAccount = PersonalAccount()
@@ -65,7 +66,7 @@ final class FlightStore: ObservableObject {
             targetAltitudeFeet = syncedCompetitionInfo.altitudeGoalFeet
         }
         if flightMode != .nationals {
-            resetLaunchWindow()
+            stopLaunchWindow()
         }
         save()
     }
@@ -106,7 +107,7 @@ final class FlightStore: ObservableObject {
         teams = [team]
         flightMode = mode == .nationals && !hasNationalsAccess ? .competition : mode
         targetAltitudeFeet = (flightMode == .competition || flightMode == .nationals) ? syncedCompetitionInfo.altitudeGoalFeet : 800
-        resetLaunchWindow()
+        stopLaunchWindow()
 
         rockets = [
             Rocket(
@@ -396,20 +397,50 @@ final class FlightStore: ObservableObject {
         return syncedCompetitionInfo.altitudeGoalFeet
     }
 
-    func resetLaunchWindow(duration: Int = 45 * 60) {
+    func restartLaunchWindow(duration: Int = 45 * 60) {
         launchWindowSeconds = duration
         launchWindowEndsAt = Date().addingTimeInterval(TimeInterval(duration))
+        launchTimerState = .running
+        save(immediate: true)
+    }
+
+    func startLaunchWindow() {
+        if launchWindowRemaining() <= 0 {
+            launchWindowSeconds = 45 * 60
+        }
+        launchWindowEndsAt = Date().addingTimeInterval(TimeInterval(launchWindowSeconds))
+        launchTimerState = .running
+        save(immediate: true)
+    }
+
+    func pauseLaunchWindow(now: Date = Date()) {
+        launchWindowSeconds = launchWindowRemaining(at: now)
+        launchWindowEndsAt = nil
+        launchTimerState = .paused
+        save(immediate: true)
+    }
+
+    func stopLaunchWindow(duration: Int = 45 * 60) {
+        launchWindowSeconds = duration
+        launchWindowEndsAt = nil
+        launchTimerState = .stopped
+        save(immediate: true)
     }
 
     func syncLaunchWindowRemaining(now: Date = Date()) {
-        guard let launchWindowEndsAt else {
+        guard launchTimerState == .running, let launchWindowEndsAt else {
             return
         }
         launchWindowSeconds = max(0, Int(ceil(launchWindowEndsAt.timeIntervalSince(now))))
+        if launchWindowSeconds == 0 {
+            self.launchWindowEndsAt = nil
+            launchTimerState = .stopped
+            save(immediate: true)
+        }
     }
 
     func launchWindowRemaining(at date: Date = Date()) -> Int {
-        guard let launchWindowEndsAt else {
+        guard launchTimerState == .running, let launchWindowEndsAt else {
             return launchWindowSeconds
         }
         return max(0, Int(ceil(launchWindowEndsAt.timeIntervalSince(date))))
@@ -467,6 +498,7 @@ final class FlightStore: ObservableObject {
             targetAltitudeFeet: targetAltitudeFeet,
             launchWindowSeconds: launchWindowSeconds,
             launchWindowEndsAt: launchWindowEndsAt,
+            launchTimerState: launchTimerState,
             launchChecklistItems: launchChecklistItems,
             profile: profile,
             personalAccount: personalAccount,
@@ -485,6 +517,7 @@ final class FlightStore: ObservableObject {
         targetAltitudeFeet = snapshot.targetAltitudeFeet
         launchWindowSeconds = snapshot.launchWindowSeconds
         launchWindowEndsAt = snapshot.launchWindowEndsAt
+        launchTimerState = snapshot.launchTimerState ?? (snapshot.launchWindowEndsAt == nil ? .stopped : .running)
         launchChecklistItems = snapshot.launchChecklistItems?.isEmpty == false
             ? snapshot.launchChecklistItems ?? Self.defaultLaunchChecklistItems
             : Self.defaultLaunchChecklistItems
@@ -783,6 +816,7 @@ private struct StoreSnapshot: Codable {
     var nationalsMode: Bool?
     var launchWindowSeconds: Int
     var launchWindowEndsAt: Date?
+    var launchTimerState: LaunchTimerState?
     var launchChecklistItems: [LaunchChecklistItem]?
     var profile: UserProfile?
     var personalAccount: PersonalAccount?

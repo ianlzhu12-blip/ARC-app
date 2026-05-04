@@ -1379,10 +1379,7 @@ struct AccountView: View {
 
     private func sheetNumber(_ value: String, header: String, defaultUnit: SheetUnit?) -> Double? {
         let lowercased = value.lowercased()
-        let cleaned = lowercased
-            .replacingOccurrences(of: ",", with: "")
-            .replacingOccurrences(of: #"[^0-9.\-]"#, with: "", options: .regularExpression)
-        guard let number = Double(cleaned) else { return nil }
+        guard let number = firstSheetNumber(in: lowercased) else { return nil }
         let unit = inferredUnit(value: lowercased, header: header, defaultUnit: defaultUnit)
         return convertedSheetNumber(number, unit: unit)
     }
@@ -1413,10 +1410,7 @@ struct AccountView: View {
 
     private func plausibleReefedCentimeters(_ value: String, header: String) -> Double? {
         let lowercased = value.lowercased()
-        let cleaned = lowercased
-            .replacingOccurrences(of: ",", with: "")
-            .replacingOccurrences(of: #"[^0-9.\-]"#, with: "", options: .regularExpression)
-        guard let rawNumber = Double(cleaned) else { return nil }
+        guard let rawNumber = firstSheetNumber(in: lowercased) else { return nil }
         let unit = inferredUnit(value: lowercased, header: header, defaultUnit: .centimeters)
         let centimeters: Double
         switch unit {
@@ -1430,6 +1424,14 @@ struct AccountView: View {
             centimeters = rawNumber
         }
         return (0...500).contains(centimeters) ? centimeters : nil
+    }
+
+    private func firstSheetNumber(in value: String) -> Double? {
+        let cleaned = value.replacingOccurrences(of: ",", with: "")
+        guard let range = cleaned.range(of: #"-?\d+(?:\.\d+)?"#, options: .regularExpression) else {
+            return nil
+        }
+        return Double(cleaned[range])
     }
 
     private func inferredUnit(value: String, header: String, defaultUnit: SheetUnit?) -> SheetUnit? {

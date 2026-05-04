@@ -25,7 +25,36 @@
 		10B000000000000000000116 /* Services/DeviceLocationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000116 /* Services/DeviceLocationService.swift */; };
 		10B000000000000000000117 /* Services/OpenRocketImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000117 /* Services/OpenRocketImporter.swift */; };
 		10B000000000000000000118 /* Services/VideoFlightAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000118 /* Services/VideoFlightAnalyzer.swift */; };
+		10B000000000000000000119 /* Services/LaunchTimerLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000119 /* Services/LaunchTimerLiveActivity.swift */; };
+		10B000000000000000000120 /* Models/LaunchTimerActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000120 /* Models/LaunchTimerActivityAttributes.swift */; };
+		10B000000000000000000201 /* LaunchTimerLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000201 /* LaunchTimerLiveActivityWidget.swift */; };
+		10B000000000000000000202 /* Models/LaunchTimerActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000120 /* Models/LaunchTimerActivityAttributes.swift */; };
+		10B000000000000000000203 /* ARCFlightOptimizerLiveActivity.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000202 /* ARCFlightOptimizerLiveActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		10K000000000000000000201 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 10F000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 10E000000000000000000201;
+			remoteInfo = ARCFlightOptimizerLiveActivity;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		10L000000000000000000201 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				10B000000000000000000203 /* ARCFlightOptimizerLiveActivity.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		10A000000000000000000001 /* ARCFlightOptimizer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ARCFlightOptimizer.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -47,10 +76,21 @@
 		10A000000000000000000116 /* Services/DeviceLocationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/DeviceLocationService.swift; sourceTree = "<group>"; };
 		10A000000000000000000117 /* Services/OpenRocketImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/OpenRocketImporter.swift; sourceTree = "<group>"; };
 		10A000000000000000000118 /* Services/VideoFlightAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/VideoFlightAnalyzer.swift; sourceTree = "<group>"; };
+		10A000000000000000000119 /* Services/LaunchTimerLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/LaunchTimerLiveActivity.swift; sourceTree = "<group>"; };
+		10A000000000000000000120 /* Models/LaunchTimerActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/LaunchTimerActivityAttributes.swift; sourceTree = "<group>"; };
+		10A000000000000000000201 /* LaunchTimerLiveActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchTimerLiveActivityWidget.swift; sourceTree = "<group>"; };
+		10A000000000000000000202 /* ARCFlightOptimizerLiveActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ARCFlightOptimizerLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		10C000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		10C000000000000000000201 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -64,6 +104,7 @@
 			isa = PBXGroup;
 			children = (
 				10D000000000000000000002 /* ARCFlightOptimizer */,
+				10D000000000000000000201 /* ARCFlightOptimizerLiveActivity */,
 				10D000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -74,6 +115,7 @@
 				10A000000000000000000115 /* Assets.xcassets */,
 				10A000000000000000000101 /* ARCFlightOptimizerApp.swift */,
 				10A000000000000000000102 /* Models/FlightModels.swift */,
+				10A000000000000000000120 /* Models/LaunchTimerActivityAttributes.swift */,
 				10A000000000000000000103 /* Services/FlightStore.swift */,
 				10A000000000000000000104 /* Services/PredictionEngine.swift */,
 				10A000000000000000000105 /* Services/WeatherService.swift */,
@@ -82,6 +124,7 @@
 				10A000000000000000000116 /* Services/DeviceLocationService.swift */,
 				10A000000000000000000117 /* Services/OpenRocketImporter.swift */,
 				10A000000000000000000118 /* Services/VideoFlightAnalyzer.swift */,
+				10A000000000000000000119 /* Services/LaunchTimerLiveActivity.swift */,
 				10A000000000000000000106 /* Views/ContentView.swift */,
 				10A000000000000000000107 /* Views/DashboardView.swift */,
 				10A000000000000000000108 /* Views/QuickLogView.swift */,
@@ -97,8 +140,17 @@
 			isa = PBXGroup;
 			children = (
 				10A000000000000000000001 /* ARCFlightOptimizer.app */,
+				10A000000000000000000202 /* ARCFlightOptimizerLiveActivity.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		10D000000000000000000201 /* ARCFlightOptimizerLiveActivity */ = {
+			isa = PBXGroup;
+			children = (
+				10A000000000000000000201 /* LaunchTimerLiveActivityWidget.swift */,
+			);
+			path = ARCFlightOptimizerLiveActivity;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -111,15 +163,34 @@
 				10G000000000000000000001 /* Sources */,
 				10J000000000000000000001 /* Resources */,
 				10C000000000000000000001 /* Frameworks */,
+				10L000000000000000000201 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				10M000000000000000000201 /* PBXTargetDependency */,
 			);
 			name = ARCFlightOptimizer;
 			productName = ARCFlightOptimizer;
 			productReference = 10A000000000000000000001 /* ARCFlightOptimizer.app */;
 			productType = "com.apple.product-type.application";
+		};
+		10E000000000000000000201 /* ARCFlightOptimizerLiveActivity */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 10I000000000000000000201 /* Build configuration list for PBXNativeTarget "ARCFlightOptimizerLiveActivity" */;
+			buildPhases = (
+				10G000000000000000000201 /* Sources */,
+				10J000000000000000000201 /* Resources */,
+				10C000000000000000000201 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ARCFlightOptimizerLiveActivity;
+			productName = ARCFlightOptimizerLiveActivity;
+			productReference = 10A000000000000000000202 /* ARCFlightOptimizerLiveActivity.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -132,6 +203,9 @@
 				LastUpgradeCheck = 2640;
 				TargetAttributes = {
 					10E000000000000000000001 = {
+						CreatedOnToolsVersion = 15.3;
+					};
+					10E000000000000000000201 = {
 						CreatedOnToolsVersion = 15.3;
 					};
 				};
@@ -150,6 +224,7 @@
 			projectRoot = "";
 			targets = (
 				10E000000000000000000001 /* ARCFlightOptimizer */,
+				10E000000000000000000201 /* ARCFlightOptimizerLiveActivity */,
 			);
 		};
 /* End PBXProject section */
@@ -163,6 +238,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		10J000000000000000000201 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -172,6 +254,7 @@
 			files = (
 				10B000000000000000000101 /* ARCFlightOptimizerApp.swift in Sources */,
 				10B000000000000000000102 /* Models/FlightModels.swift in Sources */,
+				10B000000000000000000120 /* Models/LaunchTimerActivityAttributes.swift in Sources */,
 				10B000000000000000000103 /* Services/FlightStore.swift in Sources */,
 				10B000000000000000000104 /* Services/PredictionEngine.swift in Sources */,
 				10B000000000000000000105 /* Services/WeatherService.swift in Sources */,
@@ -180,6 +263,7 @@
 				10B000000000000000000116 /* Services/DeviceLocationService.swift in Sources */,
 				10B000000000000000000117 /* Services/OpenRocketImporter.swift in Sources */,
 				10B000000000000000000118 /* Services/VideoFlightAnalyzer.swift in Sources */,
+				10B000000000000000000119 /* Services/LaunchTimerLiveActivity.swift in Sources */,
 				10B000000000000000000106 /* Views/ContentView.swift in Sources */,
 				10B000000000000000000107 /* Views/DashboardView.swift in Sources */,
 				10B000000000000000000108 /* Views/QuickLogView.swift in Sources */,
@@ -190,7 +274,24 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		10G000000000000000000201 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				10B000000000000000000202 /* Models/LaunchTimerActivityAttributes.swift in Sources */,
+				10B000000000000000000201 /* LaunchTimerLiveActivityWidget.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		10M000000000000000000201 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 10E000000000000000000201 /* ARCFlightOptimizerLiveActivity */;
+			targetProxy = 10K000000000000000000201 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		10H000000000000000000001 /* Debug */ = {
@@ -326,6 +427,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "ARC Optimizer uses your location to pull launch-site weather.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "ARC Optimizer lets you attach launch videos from your photo library to flight logs.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -362,6 +464,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "ARC Optimizer uses your location to pull launch-site weather.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "ARC Optimizer lets you attach launch videos from your photo library to flight logs.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -384,6 +487,68 @@
 			};
 			name = Release;
 		};
+		10H000000000000000000201 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 73Y53R4C6Y;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Launch Timer";
+				INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier = "com.apple.widgetkit-extension";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.codex.arcflightoptimizer.LiveActivity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				WRAPPER_EXTENSION = appex;
+			};
+			name = Debug;
+		};
+		10H000000000000000000202 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 73Y53R4C6Y;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Launch Timer";
+				INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier = "com.apple.widgetkit-extension";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.codex.arcflightoptimizer.LiveActivity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				WRAPPER_EXTENSION = appex;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -401,6 +566,15 @@
 			buildConfigurations = (
 				10H000000000000000000003 /* Debug */,
 				10H000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		10I000000000000000000201 /* Build configuration list for PBXNativeTarget "ARCFlightOptimizerLiveActivity" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				10H000000000000000000201 /* Debug */,
+				10H000000000000000000202 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

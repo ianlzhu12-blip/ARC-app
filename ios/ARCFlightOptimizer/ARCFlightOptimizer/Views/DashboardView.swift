@@ -64,6 +64,7 @@ struct DashboardView: View {
             .navigationTitle("RocketTune")
             .onAppear {
                 store.syncLaunchWindowRemaining()
+                updateLaunchTimerLiveActivity()
             }
             .task {
                 await store.refreshCompetitionInfoIfNeeded()
@@ -205,19 +206,47 @@ struct DashboardView: View {
     private var nationalsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                HStack {
-                    Label("Launch window", systemImage: "timer")
-                    Spacer()
-                    Text(timeString(store.launchWindowRemaining(at: context.date)))
-                        .font(.title.bold().monospacedDigit())
+                let remaining = store.launchWindowRemaining(at: context.date)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Label("Launch window", systemImage: timerIcon)
+                        Spacer()
+                        Text(store.launchTimerState.displayName)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(timerStatusColor)
+                    }
+                    Text(timeString(remaining))
+                        .font(.system(size: 44, weight: .black, design: .rounded).monospacedDigit())
                         .foregroundStyle(Color.arcAmber)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Live Activity updates the Lock Screen and Dynamic Island on supported iPhones while the timer is running.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
-            Button("Reset 45:00") {
-                store.resetLaunchWindow()
-                store.save(immediate: true)
+            HStack(spacing: 10) {
+                Button {
+                    if store.launchTimerState == .running {
+                        store.pauseLaunchWindow()
+                    } else {
+                        store.startLaunchWindow()
+                    }
+                    updateLaunchTimerLiveActivity()
+                } label: {
+                    Label(store.launchTimerState == .running ? "Pause" : "Start", systemImage: store.launchTimerState == .running ? "pause.fill" : "play.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    store.restartLaunchWindow()
+                    updateLaunchTimerLiveActivity()
+                } label: {
+                    Label("Restart", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.borderedProminent)
             Text("Best two qualifying flights")
                 .font(.headline)
             ForEach(bestTwo) { flight in
@@ -236,6 +265,22 @@ struct DashboardView: View {
             }
         }
         .cardStyle()
+    }
+
+    private var timerIcon: String {
+        switch store.launchTimerState {
+        case .running: return "timer"
+        case .paused: return "pause.circle.fill"
+        case .stopped: return "timer.circle"
+        }
+    }
+
+    private var timerStatusColor: Color {
+        switch store.launchTimerState {
+        case .running: return Color.arcMint
+        case .paused: return Color.arcAmber
+        case .stopped: return .secondary
+        }
     }
 
     private var launchChecklistCard: some View {
@@ -383,6 +428,14 @@ struct DashboardView: View {
 
     private func timeString(_ seconds: Int) -> String {
         "\(String(format: "%02d", seconds / 60)):\(String(format: "%02d", seconds % 60))"
+    }
+
+    private func updateLaunchTimerLiveActivity() {
+        LaunchTimerLiveActivity.update(
+            state: store.launchTimerState,
+            remainingSeconds: store.launchWindowRemaining(),
+            endsAt: store.launchWindowEndsAt
+        )
     }
 
     private func addChecklistItem() {
