@@ -31,7 +31,7 @@ struct AccountView: View {
     @State private var overrideFinalsDate = ""
     @State private var overrideFinalsLocation = ""
     @State private var showManualOverrides = false
-    @AppStorage("aiImportServerURL") private var aiImportServerURL = "http://127.0.0.1:5173"
+    private let aiImportServerURL = "http://127.0.0.1:5173"
 
     var body: some View {
         NavigationStack {
@@ -346,20 +346,8 @@ struct AccountView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Flight Sheet Attachments")
                 .font(.title3.bold())
-            Text("Attach an Excel, Numbers, or spreadsheet text file from Files. GPT import is used first when your AI server is running, then the local reader is used as backup.")
+            Text("Attach an Excel, Numbers, or spreadsheet text file from Files. The app converts readable flight rows into editable logs.")
                 .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("GPT Import Server")
-                    .font(.headline)
-                TextField("http://127.0.0.1:5173", text: $aiImportServerURL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .fieldStyle()
-                Text("Run the project server with OPENAI_API_KEY. Simulator can use 127.0.0.1; a real iPhone needs your Mac/server address.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
             VStack(spacing: 10) {
                 if hasAddedTeamMembers {
                     Button {
@@ -716,9 +704,9 @@ struct AccountView: View {
             if importedCount > 0 {
                 if gptImportedCount > 0 {
                     let fallbackText = localImportedCount > 0 ? " Local backup imported \(localImportedCount)." : ""
-                    statusMessage = "GPT converted \(gptImportedCount) editable flight logs.\(fallbackText) They now feed graphs and weight calculations."
+                    statusMessage = "AI converted \(gptImportedCount) editable flight logs.\(fallbackText) They now feed graphs and weight calculations."
                 } else if !aiFallbackFiles.isEmpty {
-                    statusMessage = "Imported \(importedCount) logs with the local backup parser because GPT import was not reachable. Check the GPT Import Server URL and OPENAI_API_KEY."
+                    statusMessage = "Imported \(importedCount) editable flight logs with the built-in sheet reader. They now feed graphs and weight calculations."
                 } else {
                     statusMessage = "Imported \(importedCount) editable flight logs. They now feed graphs and weight calculations."
                 }
