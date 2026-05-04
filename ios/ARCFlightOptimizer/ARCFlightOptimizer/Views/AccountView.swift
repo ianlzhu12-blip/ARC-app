@@ -646,7 +646,7 @@ struct AccountView: View {
             }
 
             var importedCount = 0
-            var gptImportedCount = 0
+            var aiImportedCount = 0
             var localImportedCount = 0
             var attachedOnly: [String] = []
             var unreadableFiles: [String] = []
@@ -689,7 +689,7 @@ struct AccountView: View {
                         localImportedCount += flights.count
                     } else {
                         flights = remoteFlights
-                        gptImportedCount += flights.count
+                        aiImportedCount += flights.count
                     }
                 } else {
                     if remoteRows != nil {
@@ -702,9 +702,9 @@ struct AccountView: View {
                 store.importFlights(flights)
             }
             if importedCount > 0 {
-                if gptImportedCount > 0 {
+                if aiImportedCount > 0 {
                     let fallbackText = localImportedCount > 0 ? " Local backup imported \(localImportedCount)." : ""
-                    statusMessage = "AI converted \(gptImportedCount) editable flight logs.\(fallbackText) They now feed graphs and weight calculations."
+                    statusMessage = "AI converted \(aiImportedCount) editable flight logs.\(fallbackText) They now feed graphs and weight calculations."
                 } else if !aiFallbackFiles.isEmpty {
                     statusMessage = "Imported \(importedCount) editable flight logs with the built-in sheet reader. They now feed graphs and weight calculations."
                 } else {
@@ -1757,7 +1757,7 @@ private struct AIBackendClient {
         guard let baseURL else { return [] }
         var request = URLRequest(url: baseURL.appendingPathComponent("api/import-flight-sheet"))
         request.httpMethod = "POST"
-        request.timeoutInterval = 75
+        request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder.arc.encode(RemoteFlightSheetRequest(fileName: fileName, text: text))
 
