@@ -260,6 +260,92 @@ function safeJSONFromText(text) {
   }
 }
 
+const nullableString = { anyOf: [{ type: "string" }, { type: "null" }] };
+const nullableNumber = { anyOf: [{ type: "number" }, { type: "null" }] };
+const flightRowSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "rocketName",
+    "motorDesignation",
+    "massGrams",
+    "targetAltitudeFeet",
+    "altitudeFeet",
+    "flightTimeSeconds",
+    "temperatureF",
+    "windMPH",
+    "humidityPercent",
+    "parachuteSizeInches",
+    "parachuteReefedCentimeters",
+    "notes",
+    "flownAtText",
+    "eggStatus",
+    "attachments"
+  ],
+  properties: {
+    rocketName: nullableString,
+    motorDesignation: nullableString,
+    massGrams: nullableNumber,
+    targetAltitudeFeet: nullableNumber,
+    altitudeFeet: nullableNumber,
+    flightTimeSeconds: nullableNumber,
+    temperatureF: nullableNumber,
+    windMPH: nullableNumber,
+    humidityPercent: nullableNumber,
+    parachuteSizeInches: nullableNumber,
+    parachuteReefedCentimeters: nullableNumber,
+    notes: nullableString,
+    flownAtText: nullableString,
+    eggStatus: nullableString,
+    attachments: nullableString
+  }
+};
+
+const flightSheetImportSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["rows"],
+  properties: {
+    rows: {
+      type: "array",
+      items: flightRowSchema
+    }
+  }
+};
+
+function finiteOrNull(value, role) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return numberFrom(String(number), role);
+}
+
+function cleanStringOrNull(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text ? text : null;
+}
+
+function sanitizeOpenAIRows(rows) {
+  return (Array.isArray(rows) ? rows : []).map((row) => ({
+    rocketName: cleanStringOrNull(row.rocketName),
+    motorDesignation: cleanStringOrNull(row.motorDesignation),
+    massGrams: finiteOrNull(row.massGrams, "mass"),
+    targetAltitudeFeet: finiteOrNull(row.targetAltitudeFeet, "targetAltitude"),
+    altitudeFeet: finiteOrNull(row.altitudeFeet, "altitude"),
+    flightTimeSeconds: finiteOrNull(row.flightTimeSeconds, "time"),
+    temperatureF: finiteOrNull(row.temperatureF, "temperature"),
+    windMPH: finiteOrNull(row.windMPH, "wind"),
+    humidityPercent: finiteOrNull(row.humidityPercent, "humidity"),
+    parachuteSizeInches: finiteOrNull(row.parachuteSizeInches, "parachute"),
+    parachuteReefedCentimeters: finiteOrNull(row.parachuteReefedCentimeters, "reefedCentimeters"),
+    notes: cleanStringOrNull(row.notes),
+    flownAtText: cleanStringOrNull(row.flownAtText),
+    eggStatus: cleanStringOrNull(row.eggStatus),
+    attachments: cleanStringOrNull(row.attachments)
+  })).filter((row) => row.altitudeFeet !== null);
+}
+
 async function parseFlightSheetWithOpenAI({ text, fileName }) {
   const client = await openAIClient();
   if (!client) return [];
@@ -267,20 +353,35 @@ async function parseFlightSheetWithOpenAI({ text, fileName }) {
   const response = await client.responses.create({
     model: openAIModel,
     reasoning: { effort: "low" },
+    text: {
+      format: {
+        type: "json_schema",
+        name: "arc_flight_sheet_import",
+        strict: true,
+        schema: flightSheetImportSchema
+      }
+    },
     instructions: [
-      "You convert model rocket flight spreadsheet text into strict JSON.",
-      "Return only JSON with this shape: {\"rows\":[...]}",
-      "Each row may include rocketName, motorDesignation, massGrams, targetAltitudeFeet, altitudeFeet, flightTimeSeconds, temperatureF, windMPH, humidityPercent, parachuteSizeInches, parachuteReefedCentimeters, notes, flownAtText, eggStatus, attachments.",
-      "Use null for missing numbers. Do not invent altitudes or masses.",
-      "Do not treat rocket body height, length, width, diameter, or material/specification fields as flight altitude.",
-      "Only set altitudeFeet from measured flight altitude, actual altitude, apogee, peak altitude, or clearly equivalent flight-result columns.",
-      "If a sheet has both parachute diameter and reefed length, put diameter in parachuteSizeInches and reef length in parachuteReefedCentimeters."
+      "You convert American Rocketry Challenge model rocket flight spreadsheet text into schema-valid JSON.",
+      "Each output row must represent one actual flight log, not a rocket specification row, summary row, blank row, average row, or notes-only row.",
+      "Use null for missing values. Never invent altitudes, masses, motors, dates, weather, or times.",
+      "Only set altitudeFeet from measured flight-result columns such as measured altitude, actual altitude, apogee, peak altitude, or max altitude.",
+      "Do not use target/wanted altitude, rocket body height, rocket length, width, diameter, material, parachute size, or motor dimensions as altitudeFeet.",
+      "Convert units when obvious: meters to feet for altitude, ounces/pounds/kilograms to grams for mass, Celsius to Fahrenheit, and inches to centimeters for reefed length.",
+      "Put parachute diameter/size in parachuteSizeInches and reefed/reefing length in parachuteReefedCentimeters.",
+      "Preserve date/time text in flownAtText instead of guessing a new date.",
+      "If the sheet includes egg/payload condition, map it into eggStatus as intact, cracked, broken, not carried, or unknown."
     ].join(" "),
-    input: `File name: ${fileName}\n\nSpreadsheet text:\n${String(text || "").slice(0, 16000)}`
+    input: [
+      {
+        role: "user",
+        content: `File name: ${fileName}\n\nSpreadsheet text:\n${String(text || "").slice(0, 60000)}`
+      }
+    ]
   });
 
   const parsed = safeJSONFromText(response.output_text);
-  return Array.isArray(parsed?.rows) ? parsed.rows : [];
+  return sanitizeOpenAIRows(parsed?.rows);
 }
 
 async function rocketRecommendationWithOpenAI(body) {
@@ -351,19 +452,30 @@ createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${request.headers.host}`);
     if (request.method === "POST" && url.pathname === "/api/import-flight-sheet") {
       const body = await readJSONBody(request);
-      let rows = parseFlightSheetText(body.text || "");
+      let rows = [];
       let source = "server-parser";
-      if (rows.length === 0 && process.env.OPENAI_API_KEY) {
-        rows = await parseFlightSheetWithOpenAI({
-          text: body.text || "",
-          fileName: body.fileName || "flight-sheet"
-        });
-        source = "openai";
+      if (process.env.OPENAI_API_KEY) {
+        try {
+          rows = await parseFlightSheetWithOpenAI({
+            text: body.text || "",
+            fileName: body.fileName || "flight-sheet"
+          });
+          source = "openai-structured";
+        } catch (error) {
+          console.error("OpenAI flight sheet import failed:", error);
+          source = "server-parser-openai-fallback";
+        }
+      }
+      if (rows.length === 0) {
+        rows = parseFlightSheetText(body.text || "");
+        if (source === "openai-structured") {
+          source = "server-parser-openai-empty";
+        }
       }
       sendJSON(response, 200, {
         rows,
         source,
-        message: `Server parsed ${rows.length} editable flight log${rows.length === 1 ? "" : "s"}.`
+        message: `${source.startsWith("openai") ? "GPT converted" : "Server parsed"} ${rows.length} editable flight log${rows.length === 1 ? "" : "s"}.`
       });
       return;
     }

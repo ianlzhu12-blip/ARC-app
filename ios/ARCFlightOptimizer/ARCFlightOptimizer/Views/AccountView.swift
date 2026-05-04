@@ -31,6 +31,7 @@ struct AccountView: View {
     @State private var overrideFinalsDate = ""
     @State private var overrideFinalsLocation = ""
     @State private var showManualOverrides = false
+    @AppStorage("aiImportServerURL") private var aiImportServerURL = "http://127.0.0.1:5173"
 
     var body: some View {
         NavigationStack {
@@ -346,8 +347,20 @@ struct AccountView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Flight Sheet Attachments")
                 .font(.title3.bold())
-            Text("Attach an Excel, Numbers, or spreadsheet text file from Files. The reader converts rows into editable flight logs that feed graphs and weight calculations.")
+            Text("Attach an Excel, Numbers, or spreadsheet text file from Files. GPT import is used first when your AI server is running, then the local reader is used as backup.")
                 .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("GPT Import Server")
+                    .font(.headline)
+                TextField("http://127.0.0.1:5173", text: $aiImportServerURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .fieldStyle()
+                Text("Run the project server with OPENAI_API_KEY. Simulator can use 127.0.0.1; a real iPhone needs your Mac/server address.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             VStack(spacing: 10) {
                 if hasAddedTeamMembers {
                     Button {
@@ -645,8 +658,11 @@ struct AccountView: View {
             }
 
             var importedCount = 0
+            var gptImportedCount = 0
+            var localImportedCount = 0
             var attachedOnly: [String] = []
             var unreadableFiles: [String] = []
+            var aiFallbackFiles: [String] = []
             for url in urls {
                 let didAccess = url.startAccessingSecurityScopedResource()
                 defer {
@@ -668,12 +684,44 @@ struct AccountView: View {
                     attachedOnly.append(fileName)
                     continue
                 }
-                let flights = parseFlightSheet(text, fileName: fileName)
+                let remoteRows: [RemoteFlightRow]?
+                do {
+                    remoteRows = try await AIBackendClient(baseURLString: aiImportServerURL).importFlightSheet(text: text, fileName: fileName)
+                } catch {
+                    remoteRows = nil
+                    aiFallbackFiles.append(fileName)
+                }
+
+                let flights: [Flight]
+                if let remoteRows, !remoteRows.isEmpty {
+                    let remoteFlights = flightLogs(from: remoteRows)
+                    if remoteFlights.isEmpty {
+                        aiFallbackFiles.append(fileName)
+                        flights = parseFlightSheet(text, fileName: fileName)
+                        localImportedCount += flights.count
+                    } else {
+                        flights = remoteFlights
+                        gptImportedCount += flights.count
+                    }
+                } else {
+                    if remoteRows != nil {
+                        aiFallbackFiles.append(fileName)
+                    }
+                    flights = parseFlightSheet(text, fileName: fileName)
+                    localImportedCount += flights.count
+                }
                 importedCount += flights.count
                 store.importFlights(flights)
             }
             if importedCount > 0 {
-                statusMessage = "Imported \(importedCount) editable flight logs. They now feed graphs and weight calculations."
+                if gptImportedCount > 0 {
+                    let fallbackText = localImportedCount > 0 ? " Local backup imported \(localImportedCount)." : ""
+                    statusMessage = "GPT converted \(gptImportedCount) editable flight logs.\(fallbackText) They now feed graphs and weight calculations."
+                } else if !aiFallbackFiles.isEmpty {
+                    statusMessage = "Imported \(importedCount) logs with the local backup parser because GPT import was not reachable. Check the GPT Import Server URL and OPENAI_API_KEY."
+                } else {
+                    statusMessage = "Imported \(importedCount) editable flight logs. They now feed graphs and weight calculations."
+                }
             } else if !unreadableFiles.isEmpty {
                 statusMessage = "Could not read \(unreadableFiles.count) selected file(s). Try saving the sheet to Files as .xlsx, .csv, or tab-separated text, then import again."
             } else if !attachedOnly.isEmpty {
@@ -1721,7 +1769,7 @@ private struct AIBackendClient {
         guard let baseURL else { return [] }
         var request = URLRequest(url: baseURL.appendingPathComponent("api/import-flight-sheet"))
         request.httpMethod = "POST"
-        request.timeoutInterval = 18
+        request.timeoutInterval = 75
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder.arc.encode(RemoteFlightSheetRequest(fileName: fileName, text: text))
 
@@ -1741,6 +1789,7 @@ private struct RemoteFlightSheetRequest: Codable {
 private struct RemoteFlightSheetResponse: Codable {
     var rows: [RemoteFlightRow]
     var message: String?
+    var source: String?
 }
 
 private struct RemoteFlightRow: Codable {
