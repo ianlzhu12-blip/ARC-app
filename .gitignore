@@ -1,0 +1,19 @@
+.DS_Store
+
+# Xcode user state and build products
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+
+# Swift Package Manager / Xcode caches
+.build/
+Package.resolved
+
+# Node dependencies and local config
+node_modules/
+.env
+.env.*
+
+# Logs
+*.log

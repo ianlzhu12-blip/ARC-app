@@ -1,0 +1,13 @@
+{
+  "name": "arc-flight-optimizer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "openai": "^6.0.0"
+  }
+}
