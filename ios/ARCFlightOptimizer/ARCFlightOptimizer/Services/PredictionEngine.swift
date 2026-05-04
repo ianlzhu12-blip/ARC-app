@@ -64,7 +64,8 @@ enum PredictionEngine {
         targetAltitude: Double,
         targetFlightTimeRange: ClosedRange<Double>? = nil
     ) -> [Recommendation] {
-        let usableFlights = trainingFlights(from: flights, input: input).filter { $0.measuredAltitudeFeet.isFinite }
+        let groupedFlights = targetGroupedFlights(from: flights, targetAltitude: targetAltitude)
+        let usableFlights = trainingFlights(from: groupedFlights, input: input).filter { $0.measuredAltitudeFeet.isFinite }
         let current = predict(flights: usableFlights, input: input)
         let delta = targetAltitude - current.altitudeFeet
 
@@ -156,6 +157,8 @@ enum PredictionEngine {
         targetFlightTimeRange: ClosedRange<Double>? = nil,
         isReloadableMotor: Bool? = nil
     ) -> OptimizationResult {
+        let targetGroupedFlights = targetGroupedFlights(from: flights, targetAltitude: targetAltitudeFeet)
+        let exactTargetGroup = wantedAltitudeGroup(from: flights, targetAltitude: targetAltitudeFeet)
         let currentMass = rocket.dryMassGrams + 90
         let baseInput = PredictionInput(
             motorType: selectedMotor.motorClass,
@@ -171,7 +174,7 @@ enum PredictionEngine {
         )
 
         var bestMass = currentMass
-        var bestPrediction = predict(flights: flights, input: baseInput)
+        var bestPrediction = predict(flights: targetGroupedFlights, input: baseInput)
         var bestError = abs(bestPrediction.altitudeFeet - targetAltitudeFeet)
 
         let coarseSearch = bestMassSearchRange(for: rocket, currentMass: currentMass)
@@ -188,7 +191,7 @@ enum PredictionEngine {
                 rocketHeightMillimeters: baseInput.rocketHeightMillimeters,
                 rocketWidthMillimeters: baseInput.rocketWidthMillimeters
             )
-            let prediction = predict(flights: flights, input: candidate)
+            let prediction = predict(flights: targetGroupedFlights, input: candidate)
             let error = abs(prediction.altitudeFeet - targetAltitudeFeet)
             if error < bestError {
                 bestMass = step
@@ -200,7 +203,7 @@ enum PredictionEngine {
         for step in stride(from: max(coarseSearch.lowerBound, bestMass - 35), through: min(coarseSearch.upperBound, bestMass + 35), by: 5) {
             var candidate = baseInput
             candidate.rocketMassGrams = step
-            let prediction = predict(flights: flights, input: candidate)
+            let prediction = predict(flights: targetGroupedFlights, input: candidate)
             let error = abs(prediction.altitudeFeet - targetAltitudeFeet)
             if error < bestError {
                 bestMass = step
@@ -212,7 +215,7 @@ enum PredictionEngine {
         let estimatedFlightTime = estimatedFlightTimeSeconds(rocket: rocket, massGrams: bestMass, weather: weather)
         let reloadable = isReloadableMotor ?? selectedMotor.reloadable
         let reefSuggestion = recommendedReefedCentimeters(
-            flights: flights,
+            flights: targetGroupedFlights,
             targetRange: targetFlightTimeRange,
             estimatedFlightTime: estimatedFlightTime
         )
@@ -228,9 +231,12 @@ enum PredictionEngine {
 
         var notes = [
             "Optimization uses past flights, selected motor impulse, airframe dimensions, parachute size, material, and current weather.",
-            "Most similar flights for today's motor, weather, mass, and video-analyzed data are weighted more heavily.",
+            "Flights with the same wanted altitude are grouped and weighted more heavily before calculating mass and reefing.",
             "Suggested mass is relative to an estimated ready-to-fly baseline of about \(Int(currentMass)) g."
         ]
+        if exactTargetGroup.count >= 2 {
+            notes.append("Using \(exactTargetGroup.count) logged flight\(exactTargetGroup.count == 1 ? "" : "s") from the \(Int(targetAltitudeFeet.rounded())) ft wanted-altitude group as the strongest calibration set.")
+        }
         if rocket.importedFromOpenRocket {
             notes.insert(
                 "Using OpenRocket design data from \(rocket.openRocketFileName ?? "the imported file"): \(rocket.openRocketDesignSummary ?? "airframe mass and dimensions are feeding the optimizer").",
@@ -402,6 +408,26 @@ enum PredictionEngine {
             output.append(analyzedFlight)
         }
         return output
+    }
+
+    private static func targetGroupedFlights(from flights: [Flight], targetAltitude: Double) -> [Flight] {
+        let group = wantedAltitudeGroup(from: flights, targetAltitude: targetAltitude)
+        guard group.count >= 2 else { return flights }
+
+        var output = flights
+        let repeatCount = group.count >= 5 ? 3 : 2
+        for _ in 0..<repeatCount {
+            output.append(contentsOf: group)
+        }
+        return output
+    }
+
+    private static func wantedAltitudeGroup(from flights: [Flight], targetAltitude: Double) -> [Flight] {
+        let roundedTarget = targetAltitude.rounded()
+        return flights.filter { flight in
+            guard let wanted = flight.targetAltitudeFeet, wanted.isFinite else { return false }
+            return abs(wanted.rounded() - roundedTarget) <= 1
+        }
     }
 
     private static func sameDayRelevanceBoost(for flight: Flight, input: PredictionInput) -> Int {

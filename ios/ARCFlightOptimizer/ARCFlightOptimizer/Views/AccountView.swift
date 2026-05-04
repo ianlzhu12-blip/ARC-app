@@ -76,12 +76,11 @@ struct AccountView: View {
                     statusMessage = "Saved flight sheet."
                 }
             }
-            .fileImporter(
-                isPresented: $isImportingFlightSheet,
-                allowedContentTypes: flightSheetTypes,
-                allowsMultipleSelection: true
-            ) { result in
-                importFlightSheets(result)
+            .sheet(isPresented: $isImportingFlightSheet) {
+                FlightSheetPicker(allowedContentTypes: flightSheetTypes) { result in
+                    isImportingFlightSheet = false
+                    importFlightSheets(result)
+                }
             }
             .fileExporter(
                 isPresented: $isExportingTeamBackup,
@@ -620,6 +619,7 @@ struct AccountView: View {
     }
 
     private func importFlightSheets(_ result: Result<[URL], Error>) {
+        isImportingFlightSheet = false
         statusMessage = "Importing sheet attachments..."
         Task {
             await importFlightSheetsAsync(result)
@@ -1825,5 +1825,40 @@ private struct FlightSheetDocument: FileDocument {
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: Data(text.utf8))
+    }
+}
+
+private struct FlightSheetPicker: UIViewControllerRepresentable {
+    var allowedContentTypes: [UTType]
+    var onComplete: (Result<[URL], Error>) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: allowedContentTypes, asCopy: true)
+        picker.allowsMultipleSelection = true
+        picker.shouldShowFileExtensions = true
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onComplete: onComplete)
+    }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        var onComplete: (Result<[URL], Error>) -> Void
+
+        init(onComplete: @escaping (Result<[URL], Error>) -> Void) {
+            self.onComplete = onComplete
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            onComplete(.success(urls))
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onComplete(.success([]))
+        }
     }
 }
