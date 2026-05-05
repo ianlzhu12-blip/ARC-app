@@ -102,6 +102,9 @@ enum VideoFlightAnalyzer {
         let effectiveTime = flight.flightTimeSeconds ?? videoTime
         let altitudeError = flight.measuredAltitudeFeet - targetAltitudeFeet
         let absoluteAltitudeError = abs(altitudeError)
+        let weatherDragScore = max(0, flight.weather.windMPH - 6) * 1.8
+            + max(0, 55 - flight.weather.temperatureF) * 0.55
+            + max(0, flight.weather.humidityPercent - 70) * 0.25
         var evidence: [String] = []
         var recommendations: [String] = []
         var causes: [String] = []
@@ -117,6 +120,9 @@ enum VideoFlightAnalyzer {
             if flight.weather.windMPH >= 10 {
                 causes.append("wind may have caused weathercocking or extra drag")
                 recommendations.append("In similar wind, consider launching in calmer air or checking rod angle and rail friction.")
+            }
+            if weatherDragScore > 18 {
+                evidence.append("Weather conditions added a high drag/performance penalty for this flight.")
             }
             if flight.weather.temperatureF < 45 {
                 causes.append("cold air and motor performance may have reduced altitude")
@@ -141,11 +147,21 @@ enum VideoFlightAnalyzer {
             } else if effectiveTime < targetFlightTimeRange.lowerBound {
                 evidence.append("Flight time was \(String(format: "%.1f", targetFlightTimeRange.lowerBound - effectiveTime)) s short.")
                 causes.append("descent may be too fast")
-                recommendations.append("Increase parachute area or inspect deployment timing if the video shows a late canopy.")
+                let reefAdvice = reefingAdvice(
+                    flight: flight,
+                    targetSeconds: (targetFlightTimeRange.lowerBound + targetFlightTimeRange.upperBound) / 2,
+                    effectiveSeconds: effectiveTime
+                )
+                recommendations.append(reefAdvice ?? "Increase parachute area or inspect deployment timing if the video shows a late canopy.")
             } else {
                 evidence.append("Flight time was \(String(format: "%.1f", effectiveTime - targetFlightTimeRange.upperBound)) s long.")
                 causes.append("descent may be too slow")
-                recommendations.append("Reduce parachute size slightly or check for excessive drift in wind.")
+                let reefAdvice = reefingAdvice(
+                    flight: flight,
+                    targetSeconds: (targetFlightTimeRange.lowerBound + targetFlightTimeRange.upperBound) / 2,
+                    effectiveSeconds: effectiveTime
+                )
+                recommendations.append(reefAdvice ?? "Reduce parachute size slightly or check for excessive drift in wind.")
             }
         } else if let videoTime {
             evidence.append("Video estimated flight duration at \(String(format: "%.1f", videoTime)) s.")
@@ -174,6 +190,14 @@ enum VideoFlightAnalyzer {
             let loadedDelta = flight.rocketMassGrams - rocket.dryMassGrams
             evidence.append("Loaded mass was \(Int(flight.rocketMassGrams.rounded())) g, about \(Int(loadedDelta.rounded())) g above dry mass.")
             evidence.append("Parachute was \(Int(flight.parachuteSizeInches.rounded())) in on a \(rocket.material.displayName.lowercased()) rocket.")
+            if absoluteAltitudeError > 20 {
+                let estimatedMassChange = min(max(altitudeError / 1.2, -120), 120)
+                recommendations.append(
+                    estimatedMassChange > 0
+                    ? "For a similar day, add roughly \(Int(abs(estimatedMassChange).rounded())) g before retesting this setup."
+                    : "For a similar day, remove roughly \(Int(abs(estimatedMassChange).rounded())) g before retesting this setup."
+                )
+            }
         }
         if let reefedCentimeters = flight.parachuteReefedCentimeters {
             evidence.append("Parachute reefing was logged at \(String(format: "%.1f", reefedCentimeters)) cm.")
@@ -219,6 +243,18 @@ enum VideoFlightAnalyzer {
             confidence: confidence,
             severityColorName: severity
         )
+    }
+
+    private static func reefingAdvice(flight: Flight, targetSeconds: Double, effectiveSeconds: Double) -> String? {
+        guard let reefedCentimeters = flight.parachuteReefedCentimeters else { return nil }
+        let secondsDelta = targetSeconds - effectiveSeconds
+        guard abs(secondsDelta) >= 0.8 else { return nil }
+        let centimetersDelta = min(max(-secondsDelta * 1.6, -12), 12)
+        let suggested = max(0, reefedCentimeters + centimetersDelta)
+        if secondsDelta > 0 {
+            return "Flight was short; reduce reefing toward \(String(format: "%.1f", suggested)) cm or use more chute area."
+        }
+        return "Flight was long; increase reefing toward \(String(format: "%.1f", suggested)) cm or use slightly less chute area."
     }
 
     static func attachmentFolder() throws -> URL {

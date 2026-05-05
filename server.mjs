@@ -313,6 +313,28 @@ const flightSheetImportSchema = {
   }
 };
 
+const rocketRecommendationSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "suggestedMassGrams",
+    "predictedAltitudeFeet",
+    "confidence",
+    "reasoning",
+    "notes"
+  ],
+  properties: {
+    suggestedMassGrams: nullableNumber,
+    predictedAltitudeFeet: nullableNumber,
+    confidence: nullableNumber,
+    reasoning: { type: "string" },
+    notes: {
+      type: "array",
+      items: { type: "string" }
+    }
+  }
+};
+
 function finiteOrNull(value, role) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
@@ -418,16 +440,35 @@ async function rocketRecommendationWithOpenAI(body) {
 
   const response = await client.responses.create({
     model: openAIModel,
-    reasoning: { effort: "low" },
+    reasoning: { effort: "medium" },
+    text: {
+      format: {
+        type: "json_schema",
+        name: "arc_rocket_recommendation",
+        strict: true,
+        schema: rocketRecommendationSchema
+      }
+    },
     instructions: [
-      "You are helping tune model rocket practice data for altitude targeting.",
-      "Return only JSON with suggestedMassGrams, predictedAltitudeFeet, confidence, reasoning, notes.",
-      "Base recommendations only on the provided data. Keep reasoning short and practical."
+      "You are helping tune American Rocketry Challenge model rocket practice data for altitude and time targeting.",
+      "Use only the supplied log data, rocket specs, weather, OpenRocket summary, and model prediction. Never invent extra flights.",
+      "Prefer repeatable data patterns over single outlier flights. If data is weak, keep confidence low and explain the missing calibration.",
+      "Suggested mass must be loaded mass in grams. Predicted altitude must be apogee in feet.",
+      "If parachute reefing, flight-time, delay-drill, or weather effects appear in supplied data, mention them briefly in notes.",
+      "Keep reasoning practical for a launch field: one or two short sentences."
     ].join(" "),
     input: JSON.stringify(body).slice(0, 20000)
   });
 
-  return safeJSONFromText(response.output_text);
+  const parsed = safeJSONFromText(response.output_text);
+  if (!parsed) return null;
+  return {
+    suggestedMassGrams: finiteOrNull(parsed.suggestedMassGrams, "mass"),
+    predictedAltitudeFeet: finiteOrNull(parsed.predictedAltitudeFeet, "altitude"),
+    confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0)),
+    reasoning: cleanStringOrNull(parsed.reasoning) || "AI recommendation used the supplied flight data.",
+    notes: Array.isArray(parsed.notes) ? parsed.notes.map(cleanStringOrNull).filter(Boolean).slice(0, 5) : []
+  };
 }
 
 function parseFlightSheetText(text) {

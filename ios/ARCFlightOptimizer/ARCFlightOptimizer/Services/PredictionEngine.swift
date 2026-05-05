@@ -2,7 +2,10 @@ import Foundation
 
 enum PredictionEngine {
     static func predict(flights: [Flight], input: PredictionInput) -> Prediction {
-        let usableFlights = trainingFlights(from: flights, input: input).filter { $0.measuredAltitudeFeet.isFinite }
+        let usableFlights = robustTrainingFlights(
+            from: trainingFlights(from: flights, input: input).filter { $0.measuredAltitudeFeet.isFinite },
+            input: input
+        )
         let priorAltitude = physicsPriorAltitude(for: input)
 
         guard usableFlights.count >= 4 else {
@@ -22,8 +25,10 @@ enum PredictionEngine {
         let rawFeatures = usableFlights.map { rawFeatureVector(inputFromFlight($0)) }
         let normalizer = FeatureNormalizer(rows: rawFeatures)
         let features = rawFeatures.map { normalizer.normalized($0) }
+        let queryFeatures = normalizer.normalized(rawFeatureVector(input))
 
         let targets = usableFlights.map(\.measuredAltitudeFeet)
+        let sampleWeights = usableFlights.map { similarityWeight(for: $0, input: input) }
         let width = features[0].count
         var xtx = Array(repeating: Array(repeating: 0.0, count: width), count: width)
         var xty = Array(repeating: 0.0, count: width)
@@ -32,28 +37,51 @@ enum PredictionEngine {
         // Inputs include motor impulse, mass, weather, and key airframe variables.
         // The goal is an explainable field model rather than a black-box predictor.
         for row in 0..<features.count {
+            let weight = sampleWeights[row]
             for i in 0..<width {
-                xty[i] += features[row][i] * targets[row]
+                xty[i] += features[row][i] * targets[row] * weight
                 for j in 0..<width {
-                    xtx[i][j] += features[row][i] * features[row][j]
+                    xtx[i][j] += features[row][i] * features[row][j] * weight
                 }
             }
         }
 
+        // Small field datasets can be noisy; ridge strength is lowered as useful data grows.
+        let ridge = max(0.08, 0.42 - Double(min(usableFlights.count, 18)) * 0.015)
         for i in 1..<width {
-            xtx[i][i] += 0.25
+            xtx[i][i] += ridge
         }
 
         let weights = solveLinearSystem(matrix: xtx, values: xty)
-        let regressionAltitude = dot(normalizer.normalized(rawFeatureVector(input)), weights)
-        let altitude = sanitizedAltitude(regressionAltitude * 0.72 + priorAltitude * 0.28)
-        let meanError = zip(features, targets)
-            .map { row, actual in abs(dot(row, weights) - actual) }
-            .reduce(0, +) / Double(usableFlights.count)
+        let regressionAltitude = dot(queryFeatures, weights)
+        let neighborCorrection = nearestNeighborResidualCorrection(
+            flights: usableFlights,
+            features: features,
+            targets: targets,
+            weights: weights,
+            queryFeatures: queryFeatures,
+            input: input
+        )
+        let calibratedAltitude = regressionAltitude + neighborCorrection
+        let trust = modelTrust(flightCount: usableFlights.count, input: input, flights: usableFlights)
+        let altitude = sanitizedAltitude(calibratedAltitude * trust + priorAltitude * (1 - trust))
+        let meanError = weightedMeanAbsoluteError(
+            features: features,
+            targets: targets,
+            weights: weights,
+            sampleWeights: sampleWeights
+        )
+        let neighborBonus = abs(neighborCorrection) > 0 ? 0.04 : 0
+        let confidence = confidenceScore(
+            flightCount: usableFlights.count,
+            meanError: meanError,
+            trust: trust,
+            neighborBonus: neighborBonus
+        )
 
         return Prediction(
             altitudeFeet: altitude.rounded(),
-            confidence: max(0.35, min(0.92, 1 - meanError / 180 + Double(usableFlights.count) * 0.015)),
+            confidence: confidence,
             method: "regression"
         )
     }
@@ -428,6 +456,149 @@ enum PredictionEngine {
             guard let wanted = flight.targetAltitudeFeet, wanted.isFinite else { return false }
             return abs(wanted.rounded() - roundedTarget) <= 1
         }
+    }
+
+    private static func robustTrainingFlights(from flights: [Flight], input: PredictionInput) -> [Flight] {
+        let finiteFlights = flights.filter {
+            $0.measuredAltitudeFeet.isFinite &&
+            $0.rocketMassGrams.isFinite &&
+            !$0.excludedFromAI
+        }
+        guard finiteFlights.count >= 7 else { return finiteFlights }
+
+        let altitudes = finiteFlights.map(\.measuredAltitudeFeet)
+        let medianAltitude = median(altitudes)
+        let deviations = altitudes.map { abs($0 - medianAltitude) }
+        let medianDeviation = max(median(deviations), 35)
+        let physicsPrior = physicsPriorAltitude(for: input)
+
+        return finiteFlights.filter { flight in
+            let robustZ = abs(flight.measuredAltitudeFeet - medianAltitude) / medianDeviation
+            let priorMiss = abs(flight.measuredAltitudeFeet - physicsPrior)
+            if robustZ > 4.8 && priorMiss > 450 {
+                return false
+            }
+            if flight.measuredAltitudeFeet < 50 || flight.measuredAltitudeFeet > 4_000 {
+                return false
+            }
+            return true
+        }
+    }
+
+    private static func similarityWeight(for flight: Flight, input: PredictionInput) -> Double {
+        var weight = 1.0
+        if flight.motorDesignation == input.motorDesignation {
+            weight += 2.8
+        } else if flight.motorType == input.motorType {
+            weight += 1.1
+        }
+
+        let massDistance = abs(flight.rocketMassGrams - input.rocketMassGrams)
+        weight += max(0, 2.0 - massDistance / 55)
+
+        let weatherDistance =
+            abs(flight.weather.temperatureF - input.temperatureF) / 22
+            + abs(flight.weather.windMPH - input.windMPH) / 7
+            + abs(flight.weather.humidityPercent - input.humidityPercent) / 40
+        weight += max(0, 1.6 - weatherDistance * 0.45)
+
+        if let target = flight.targetAltitudeFeet, target.isFinite {
+            let predictedSetupAltitude = physicsPriorAltitude(for: input)
+            let targetDistance = abs(target - predictedSetupAltitude)
+            weight += max(0, 1.0 - targetDistance / 250)
+        }
+        if flight.attachments.contains(where: { ($0.videoModelConfidence ?? 0) >= 0.65 }) {
+            weight += 0.55
+        }
+        if flight.flightTimeSeconds != nil {
+            weight += 0.25
+        }
+
+        return min(max(weight, 0.35), 8.0)
+    }
+
+    private static func nearestNeighborResidualCorrection(
+        flights: [Flight],
+        features: [[Double]],
+        targets: [Double],
+        weights: [Double],
+        queryFeatures: [Double],
+        input: PredictionInput
+    ) -> Double {
+        guard flights.count >= 5 else { return 0 }
+
+        let residuals = zip(features, targets).map { row, actual in
+            actual - dot(row, weights)
+        }
+        let neighbors = features.indices.map { index -> (distance: Double, residual: Double, reliability: Double) in
+            let distance = euclideanDistance(features[index], queryFeatures)
+            let reliability = similarityWeight(for: flights[index], input: input)
+            return (distance, residuals[index], reliability)
+        }
+        .sorted { $0.distance < $1.distance }
+        .prefix(min(6, max(3, flights.count / 2)))
+
+        var weightedResidual = 0.0
+        var totalWeight = 0.0
+        for neighbor in neighbors {
+            let weight = neighbor.reliability / max(0.25, neighbor.distance)
+            weightedResidual += neighbor.residual * weight
+            totalWeight += weight
+        }
+        guard totalWeight > 0 else { return 0 }
+        return min(max(weightedResidual / totalWeight, -140), 140)
+    }
+
+    private static func weightedMeanAbsoluteError(
+        features: [[Double]],
+        targets: [Double],
+        weights: [Double],
+        sampleWeights: [Double]
+    ) -> Double {
+        var error = 0.0
+        var totalWeight = 0.0
+        for index in features.indices {
+            let sampleWeight = sampleWeights[index]
+            error += abs(dot(features[index], weights) - targets[index]) * sampleWeight
+            totalWeight += sampleWeight
+        }
+        return totalWeight > 0 ? error / totalWeight : 160
+    }
+
+    private static func modelTrust(flightCount: Int, input: PredictionInput, flights: [Flight]) -> Double {
+        let exactMotorCount = flights.filter { $0.motorDesignation == input.motorDesignation }.count
+        let nearMassCount = flights.filter { abs($0.rocketMassGrams - input.rocketMassGrams) <= 85 }.count
+        var trust = 0.48 + Double(min(flightCount, 18)) * 0.018
+        trust += Double(min(exactMotorCount, 6)) * 0.025
+        trust += Double(min(nearMassCount, 6)) * 0.015
+        return min(max(trust, 0.50), 0.86)
+    }
+
+    private static func confidenceScore(
+        flightCount: Int,
+        meanError: Double,
+        trust: Double,
+        neighborBonus: Double
+    ) -> Double {
+        let dataScore = min(0.24, Double(flightCount) * 0.018)
+        let errorScore = max(-0.35, min(0.22, (95 - meanError) / 240))
+        return min(max(0.28 + dataScore + errorScore + trust * 0.28 + neighborBonus, 0.25), 0.94)
+    }
+
+    private static func euclideanDistance(_ left: [Double], _ right: [Double]) -> Double {
+        sqrt(zip(left, right).reduce(0) { total, pair in
+            total + pow(pair.0 - pair.1, 2)
+        })
+    }
+
+    private static func median(_ values: [Double]) -> Double {
+        let sorted = values.filter(\.isFinite).sorted()
+        guard !sorted.isEmpty else { return 0 }
+        let middle = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return (sorted[middle - 1] + sorted[middle]) / 2
+        }
+        return sorted[middle]
     }
 
     private static func sameDayRelevanceBoost(for flight: Flight, input: PredictionInput) -> Int {
