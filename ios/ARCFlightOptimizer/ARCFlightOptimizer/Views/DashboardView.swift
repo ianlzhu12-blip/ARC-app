@@ -140,11 +140,13 @@ struct DashboardView: View {
             HStack {
                 Text(store.isCompetitionMode ? "Target" : "Reference")
                 Spacer()
-                TextField("800", value: $store.targetAltitudeFeet, format: .number)
+                TextField("800", value: Binding(
+                    get: { store.targetAltitudeFeet },
+                    set: { store.updateTargetAltitude($0) }
+                ), format: .number)
                     .keyboardType(.decimalPad)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 90)
-                    .onSubmit { store.save() }
                 Text("ft")
             }
             .padding()

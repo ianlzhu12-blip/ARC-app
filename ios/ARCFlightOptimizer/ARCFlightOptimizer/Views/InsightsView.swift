@@ -46,7 +46,7 @@ struct InsightsView: View {
     }
 
     private var modelFlights: [Flight] {
-        Array(analysisFlights.prefix(28))
+        Array(analysisFlights.prefix(96))
     }
 
     private var targetAltitudeForAI: Double {
@@ -249,6 +249,7 @@ struct InsightsView: View {
             selectedRocketID?.uuidString ?? "all",
             predictedMotorDesignation,
             String(Int(targetAltitudeForAI.rounded())),
+            String(store.aiLearningRevision),
             String(Int(baselineMassForPrediction.rounded())),
             String(Int(baselineWeatherForPrediction.temperatureF.rounded())),
             String(Int(baselineWeatherForPrediction.windMPH.rounded())),
@@ -786,8 +787,7 @@ struct InsightsView: View {
     }
 
     private func finishNationalsSliderAdjustment() {
-        store.targetAltitudeFeet = nationalsTargetHeight
-        store.save()
+        store.updateTargetAltitude(nationalsTargetHeight)
         resetNationalsInteractionState()
     }
 

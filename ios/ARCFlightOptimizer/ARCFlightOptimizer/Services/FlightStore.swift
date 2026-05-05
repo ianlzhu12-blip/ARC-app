@@ -16,6 +16,7 @@ final class FlightStore: ObservableObject {
     @Published var syncedCompetitionInfo = MotorCatalog.arc2026CompetitionInfo
     @Published var nationalsLookup: NationalsLookupResult?
     @Published var cloudSyncSettings = CloudSyncSettings()
+    @Published private(set) var aiLearningRevision = 0
 
     private let storageKey = "arc-flight-optimizer-ios-state-v1"
     private let iCloudStorageKey = "arc-flight-optimizer-icloud-state-v1"
@@ -68,6 +69,14 @@ final class FlightStore: ObservableObject {
         if flightMode != .nationals {
             stopLaunchWindow()
         }
+        recordAILearningInput()
+        save()
+    }
+
+    func updateTargetAltitude(_ altitude: Double) {
+        guard altitude.isFinite, abs(targetAltitudeFeet - altitude) >= 0.1 else { return }
+        targetAltitudeFeet = altitude
+        recordAILearningInput()
         save()
     }
 
@@ -123,6 +132,7 @@ final class FlightStore: ObservableObject {
                 lockedForNationals: flightMode == .nationals
             )
         ]
+        recordAILearningInput()
         save()
     }
 
@@ -141,6 +151,7 @@ final class FlightStore: ObservableObject {
                 lockedForNationals: isNationalsMode
             )
         )
+        recordAILearningInput()
         save()
     }
 
@@ -175,6 +186,7 @@ final class FlightStore: ObservableObject {
                 openRocketDesignSummary: openRocketDesignSummary
             )
         )
+        recordAILearningInput()
         save()
     }
 
@@ -212,12 +224,14 @@ final class FlightStore: ObservableObject {
         if let openRocketDesignSummary {
             rockets[index].openRocketDesignSummary = openRocketDesignSummary
         }
+        recordAILearningInput()
         save()
     }
 
     func deleteRocket(id: UUID) {
         rockets.removeAll { $0.id == id }
         flights.removeAll { $0.rocketID == id }
+        recordAILearningInput()
         save()
     }
 
@@ -258,6 +272,7 @@ final class FlightStore: ObservableObject {
             ),
             at: 0
         )
+        recordAILearningInput()
         save()
     }
 
@@ -296,18 +311,22 @@ final class FlightStore: ObservableObject {
             flights[index].attachments = attachments
         }
         flights[index].round = flightMode.shortTitle
+        recordAILearningInput()
         save()
     }
 
     func importFlights(_ importedFlights: [Flight]) {
         let existingIDs = Set(flights.map(\.id))
         let newFlights = importedFlights.filter { !existingIDs.contains($0.id) }
+        guard !newFlights.isEmpty else { return }
         flights.insert(contentsOf: newFlights, at: 0)
+        recordAILearningInput()
         save()
     }
 
     func deleteFlight(id: UUID) {
         flights.removeAll { $0.id == id }
+        recordAILearningInput()
         save()
     }
 
@@ -489,6 +508,10 @@ final class FlightStore: ObservableObject {
         }
     }
 
+    private func recordAILearningInput() {
+        aiLearningRevision &+= 1
+    }
+
     private func currentSnapshot() -> StoreSnapshot {
         let snapshot = StoreSnapshot(
             teams: teams,
@@ -504,7 +527,8 @@ final class FlightStore: ObservableObject {
             personalAccount: personalAccount,
             syncedCompetitionInfo: syncedCompetitionInfo,
             nationalsLookup: nationalsLookup,
-            cloudSyncSettings: cloudSyncSettings
+            cloudSyncSettings: cloudSyncSettings,
+            aiLearningRevision: aiLearningRevision
         )
         return snapshot
     }
@@ -527,6 +551,7 @@ final class FlightStore: ObservableObject {
         syncedCompetitionInfo = snapshot.syncedCompetitionInfo ?? MotorCatalog.arc2026CompetitionInfo
         nationalsLookup = sanitizedNationalsLookup(snapshot.nationalsLookup)
         cloudSyncSettings = snapshot.cloudSyncSettings ?? CloudSyncSettings()
+        aiLearningRevision = snapshot.aiLearningRevision ?? 0
         if flightMode == .nationals && !hasNationalsAccess {
             flightMode = .competition
             targetAltitudeFeet = syncedCompetitionInfo.altitudeGoalFeet
@@ -557,6 +582,7 @@ final class FlightStore: ObservableObject {
         if nationalsLookup == nil {
             nationalsLookup = sanitizedNationalsLookup(snapshot.nationalsLookup)
         }
+        aiLearningRevision = max(aiLearningRevision, snapshot.aiLearningRevision ?? 0) &+ 1
         return (newTeams.count, newRockets.count, newFlights.count)
     }
 
@@ -663,6 +689,7 @@ final class FlightStore: ObservableObject {
         if isCompetitionMode {
             targetAltitudeFeet = info.altitudeGoalFeet
         }
+        recordAILearningInput()
         save()
     }
 
@@ -694,6 +721,7 @@ final class FlightStore: ObservableObject {
         if isCompetitionMode {
             targetAltitudeFeet = altitudeGoalFeet
         }
+        recordAILearningInput()
         save()
     }
 
@@ -823,6 +851,7 @@ private struct StoreSnapshot: Codable {
     var syncedCompetitionInfo: ARCCompetitionInfo?
     var nationalsLookup: NationalsLookupResult?
     var cloudSyncSettings: CloudSyncSettings?
+    var aiLearningRevision: Int?
 }
 
 extension JSONEncoder {
