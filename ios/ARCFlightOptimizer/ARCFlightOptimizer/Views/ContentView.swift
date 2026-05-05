@@ -13,31 +13,41 @@ struct ContentView: View {
                 }
             } else {
                 TabView(selection: $selectedTab) {
-                    DashboardView()
+                    DeferredTabContent(tag: 0, selection: $selectedTab) {
+                        DashboardView()
+                    }
                         .tabItem {
                             Label("Dashboard", systemImage: "gauge.with.dots.needle.67percent")
                         }
                         .tag(0)
 
-                    QuickLogView()
+                    DeferredTabContent(tag: 1, selection: $selectedTab) {
+                        QuickLogView()
+                    }
                         .tabItem {
                             Label("Log", systemImage: "plus.circle.fill")
                         }
                         .tag(1)
 
-                    InsightsView()
+                    DeferredTabContent(tag: 2, selection: $selectedTab) {
+                        InsightsView()
+                    }
                         .tabItem {
                             Label("Insights", systemImage: "chart.xyaxis.line")
                         }
                         .tag(2)
 
-                    RocketsView()
+                    DeferredTabContent(tag: 3, selection: $selectedTab) {
+                        RocketsView()
+                    }
                         .tabItem {
                             Label("Rockets", systemImage: "paperplane.fill")
                         }
                         .tag(3)
 
-                    AccountView()
+                    DeferredTabContent(tag: 4, selection: $selectedTab) {
+                        AccountView()
+                    }
                         .tabItem {
                             Label("Account", systemImage: "person.crop.circle")
                         }
@@ -66,9 +76,10 @@ private struct StartSetupView: View {
     @State private var defaultMotorDesignation = "F24W-4,7"
     @State private var heightMillimeters = 700.0
     @State private var widthMillimeters = 66.0
+    @State private var cachedMotors: [MotorSpec] = []
 
     private var availableMotors: [MotorSpec] {
-        MotorCatalog.motors(for: selectedMode)
+        cachedMotors.isEmpty ? MotorCatalog.motors(for: selectedMode) : cachedMotors
     }
 
     private var stepTitle: String {
@@ -137,10 +148,10 @@ private struct StartSetupView: View {
             .scrollIndicators(.visible)
             .navigationBarHidden(true)
             .onAppear {
-                defaultMotorDesignation = availableMotors.first?.designation ?? defaultMotorDesignation
+                refreshMotorsForSelectedMode()
             }
             .onChange(of: selectedMode) { _, _ in
-                defaultMotorDesignation = availableMotors.first?.designation ?? defaultMotorDesignation
+                refreshMotorsForSelectedMode()
             }
         }
     }
@@ -330,11 +341,47 @@ private struct StartSetupView: View {
             onComplete()
         }
     }
+
+    private func refreshMotorsForSelectedMode() {
+        let motors = MotorCatalog.motors(for: selectedMode)
+        cachedMotors = motors
+        if !motors.contains(where: { $0.designation == defaultMotorDesignation }) {
+            defaultMotorDesignation = motors.first?.designation ?? ""
+        }
+    }
 }
 
 private extension StartSetupView {
     init() {
         self.onComplete = {}
+    }
+}
+
+private struct DeferredTabContent<Content: View>: View {
+    let tag: Int
+    @Binding var selection: Int
+    @ViewBuilder var content: () -> Content
+    @State private var hasLoaded = false
+
+    var body: some View {
+        Group {
+            if hasLoaded || selection == tag {
+                content()
+            } else {
+                Color.clear
+            }
+        }
+        .onAppear {
+            loadIfSelected()
+        }
+        .onChange(of: selection) { _, _ in
+            loadIfSelected()
+        }
+    }
+
+    private func loadIfSelected() {
+        guard selection == tag, !hasLoaded else { return }
+        hasLoaded = true
     }
 }
 

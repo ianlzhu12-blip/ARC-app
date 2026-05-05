@@ -84,13 +84,16 @@ struct MotorSelectionField: View {
 
     private var suggestions: [MotorSpec] {
         let query = selection.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let matches = query.isEmpty
-            ? motors
-            : motors.filter {
+        if query.isEmpty {
+            return Array(motors.prefix(6))
+        }
+        return Array(
+            motors.lazy.filter {
                 $0.designation.lowercased().contains(query) ||
                 $0.manufacturer.lowercased().contains(query)
             }
-        return Array(matches.prefix(8))
+            .prefix(8)
+        )
     }
 
     var body: some View {

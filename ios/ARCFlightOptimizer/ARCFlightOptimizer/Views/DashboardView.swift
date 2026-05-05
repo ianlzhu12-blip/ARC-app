@@ -383,46 +383,21 @@ struct DashboardView: View {
 
     private var recentFlights: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Recent Flights")
-                .font(.title3.bold())
-            ForEach(store.flights.prefix(6)) { flight in
-                let summary = store.scoreSummary(for: flight)
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text("\(Int(flight.measuredAltitudeFeet)) ft")
-                            .font(.headline)
-                        Text(flight.flownAt, style: .date)
-                            .foregroundStyle(.secondary)
-                        if let flightTimeSeconds = flight.flightTimeSeconds {
-                            Text("\(String(format: "%.1f", flightTimeSeconds)) s")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Text("Egg: \(flight.eggStatus.displayName)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if summary.isDisqualified {
-                            Text("Disqualified: \(summary.disqualificationReasons.joined(separator: ", "))")
-                                .font(.caption)
-                                .foregroundStyle(Color.arcOrange)
-                        }
-                    }
-                    Spacer()
-                    if store.isCompetitionMode || (flight.round ?? "") != FlightMode.hobby.shortTitle {
-                        if summary.isDisqualified {
-                            Text("Disqualified")
-                                .foregroundStyle(Color.arcOrange)
-                        } else if let totalPoints = summary.totalPoints {
-                            Text("\(totalPoints) points")
-                                .foregroundStyle(Color.arcAmber)
-                        }
-                    } else {
-                        Text("\(Int(altitudeMiss(for: flight))) ft off")
-                            .foregroundStyle(Color.arcAmber)
+            HStack(alignment: .firstTextBaseline) {
+                Text("Recent Flights")
+                    .font(.title3.bold())
+                Spacer()
+                if !store.flights.isEmpty {
+                    NavigationLink {
+                        AllFlightsView()
+                    } label: {
+                        Text("View All")
+                            .font(.footnote.weight(.bold))
                     }
                 }
-                .padding()
-                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 18))
+            }
+            ForEach(store.flights.prefix(6)) { flight in
+                DashboardFlightRow(flight: flight)
             }
         }
         .cardStyle()
@@ -469,5 +444,286 @@ struct DashboardView: View {
         default:
             return Color.arcAmber
         }
+    }
+}
+
+private struct AllFlightsView: View {
+    @EnvironmentObject private var store: FlightStore
+    @State private var searchText = ""
+    @State private var editingFlight: Flight?
+
+    private var filteredFlights: [Flight] {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return store.flights }
+        let query = trimmed.lowercased()
+        return store.flights.filter { flight in
+            let rocketName = store.rocket(for: flight)?.name.lowercased() ?? ""
+            return rocketName.contains(query) ||
+                flight.motorDesignation.lowercased().contains(query) ||
+                flight.notes.lowercased().contains(query) ||
+                flight.eggStatus.displayName.lowercased().contains(query)
+        }
+    }
+
+    var body: some View {
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                Text("Every manual and spreadsheet-imported flight is shown here. Imported rows stay editable from the Log screen.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .cardStyle()
+
+                ForEach(filteredFlights) { flight in
+                    VStack(alignment: .leading, spacing: 10) {
+                        DashboardFlightRow(flight: flight)
+                        HStack {
+                            Button {
+                                editingFlight = flight
+                            } label: {
+                                Label("Edit", systemImage: "square.and.pencil")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button(role: .destructive) {
+                                flight.attachments.forEach(VideoFlightAnalyzer.deleteStoredVideo)
+                                store.deleteFlight(id: flight.id)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+            }
+            .padding()
+            .padding(.bottom, 28)
+        }
+        .background {
+            ARCBackground()
+                .allowsHitTesting(false)
+        }
+        .navigationTitle("All Flights")
+        .searchable(text: $searchText, prompt: "Rocket, motor, notes, egg")
+        .sheet(item: $editingFlight) { flight in
+            FlightEditSheet(flight: flight)
+        }
+    }
+}
+
+private struct FlightEditSheet: View {
+    @EnvironmentObject private var store: FlightStore
+    @Environment(\.dismiss) private var dismiss
+    let flight: Flight
+
+    @State private var selectedRocketID: UUID?
+    @State private var motorDesignation: String
+    @State private var mass: Double?
+    @State private var targetAltitude: Double?
+    @State private var altitude: Double?
+    @State private var flightTimeSeconds: Double?
+    @State private var temperature: Double?
+    @State private var wind: Double?
+    @State private var humidity: Double?
+    @State private var location: String
+    @State private var parachute: Double?
+    @State private var reefedCentimeters: Double?
+    @State private var descentSystem: String
+    @State private var eggStatus: EggStatus
+    @State private var notes: String
+
+    init(flight: Flight) {
+        self.flight = flight
+        _selectedRocketID = State(initialValue: flight.rocketID)
+        _motorDesignation = State(initialValue: flight.motorDesignation)
+        _mass = State(initialValue: flight.rocketMassGrams)
+        _targetAltitude = State(initialValue: flight.targetAltitudeFeet)
+        _altitude = State(initialValue: flight.measuredAltitudeFeet)
+        _flightTimeSeconds = State(initialValue: flight.flightTimeSeconds)
+        _temperature = State(initialValue: flight.weather.temperatureF)
+        _wind = State(initialValue: flight.weather.windMPH)
+        _humidity = State(initialValue: flight.weather.humidityPercent)
+        _location = State(initialValue: flight.weather.location)
+        _parachute = State(initialValue: flight.parachuteSizeInches)
+        _reefedCentimeters = State(initialValue: flight.parachuteReefedCentimeters)
+        _descentSystem = State(initialValue: flight.descentSystem)
+        _eggStatus = State(initialValue: flight.eggStatus)
+        _notes = State(initialValue: flight.notes)
+    }
+
+    private var selectedRocket: Rocket? {
+        if let selectedRocketID,
+           let rocket = store.rockets.first(where: { $0.id == selectedRocketID }) {
+            return rocket
+        }
+        return store.rocket(for: flight) ?? store.rockets.first
+    }
+
+    private var canSave: Bool {
+        selectedRocket != nil && mass != nil && altitude != nil && parachute != nil
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Picker("Rocket", selection: $selectedRocketID) {
+                        ForEach(store.rockets) { rocket in
+                            Text(rocket.name).tag(Optional(rocket.id))
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    MotorSelectionField(selection: $motorDesignation, motors: MotorCatalog.motors(for: store.flightMode))
+
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                        ForEach(EggStatus.allCases) { status in
+                            Button {
+                                eggStatus = status
+                            } label: {
+                                Text(status.displayName)
+                                    .font(.caption.weight(.semibold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(eggStatus == status ? .black : .primary)
+                            .background(eggStatus == status ? Color.arcMint : .white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+
+                    OptionalNumberField(title: "Rocket Mass", value: $mass, suffix: "g")
+                    OptionalNumberField(title: "Wanted Altitude", value: $targetAltitude, suffix: "ft")
+                    OptionalNumberField(title: "Measured Altitude", value: $altitude, suffix: "ft")
+                    OptionalNumberField(title: "Flight Time", value: $flightTimeSeconds, suffix: "s")
+                    HStack {
+                        OptionalNumberField(title: "Temp", value: $temperature, suffix: "F")
+                        OptionalNumberField(title: "Wind", value: $wind, suffix: "mph")
+                    }
+                    HStack {
+                        OptionalNumberField(title: "Humidity", value: $humidity, suffix: "%")
+                        OptionalNumberField(title: "Chute", value: $parachute, suffix: "in")
+                    }
+                    OptionalNumberField(title: "Reefed Length", value: $reefedCentimeters, suffix: "cm")
+                    TextField("Location", text: $location)
+                        .fieldStyle()
+                    TextField("Descent system", text: $descentSystem)
+                        .fieldStyle()
+                    TextField("Notes", text: $notes, axis: .vertical)
+                        .fieldStyle()
+
+                    Button {
+                        save()
+                    } label: {
+                        Label("Update Flight", systemImage: "checkmark.circle.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canSave)
+                }
+                .padding()
+            }
+            .background {
+                ARCBackground()
+                    .allowsHitTesting(false)
+            }
+            .navigationTitle("Edit Flight")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func save() {
+        guard let rocket = selectedRocket,
+              let mass,
+              let altitude,
+              let parachute else { return }
+        store.updateFlight(
+            id: flight.id,
+            rocket: rocket,
+            motorDesignation: motorDesignation,
+            mass: mass,
+            weather: Weather(temperatureF: temperature ?? 0, windMPH: wind ?? 0, humidityPercent: humidity ?? 0, location: location),
+            altitude: altitude,
+            targetAltitude: targetAltitude,
+            flightTimeSeconds: flightTimeSeconds,
+            parachute: parachute,
+            reefedCentimeters: reefedCentimeters,
+            descentSystem: descentSystem,
+            eggStatus: eggStatus,
+            notes: notes,
+            attachments: flight.attachments,
+            round: flight.round
+        )
+        dismiss()
+    }
+}
+
+private struct DashboardFlightRow: View {
+    @EnvironmentObject private var store: FlightStore
+    let flight: Flight
+
+    var body: some View {
+        let summary = store.scoreSummary(for: flight)
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(Int(flight.measuredAltitudeFeet)) ft")
+                    .font(.headline)
+                Text(rowSubtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                if let flightTimeSeconds = flight.flightTimeSeconds {
+                    Text("\(String(format: "%.1f", flightTimeSeconds)) s")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Egg: \(flight.eggStatus.displayName)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if summary.isDisqualified {
+                    Text("Disqualified: \(summary.disqualificationReasons.joined(separator: ", "))")
+                        .font(.caption)
+                        .foregroundStyle(Color.arcOrange)
+                }
+            }
+            Spacer()
+            scoreLabel(summary)
+        }
+        .padding()
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var rowSubtitle: String {
+        let rocketName = store.rocket(for: flight)?.name ?? "Unknown Rocket"
+        return "\(rocketName) • \(flight.motorDesignation) • \(formattedGrams(flight.rocketMassGrams)) • \(flight.flownAt.formatted(date: .abbreviated, time: .shortened))"
+    }
+
+    @ViewBuilder
+    private func scoreLabel(_ summary: FlightScoreSummary) -> some View {
+        if store.isCompetitionMode || (flight.round ?? "") != FlightMode.hobby.shortTitle {
+            if summary.isDisqualified {
+                Text("Disqualified")
+                    .foregroundStyle(Color.arcOrange)
+            } else if let totalPoints = summary.totalPoints {
+                Text("\(totalPoints) points")
+                    .foregroundStyle(Color.arcAmber)
+            }
+        } else {
+            Text("\(Int(abs(flight.measuredAltitudeFeet - store.scoringTargetAltitude(for: flight)))) ft off")
+                .foregroundStyle(Color.arcAmber)
+        }
+    }
+
+    private func formattedGrams(_ value: Double) -> String {
+        if value.rounded() == value {
+            return "\(Int(value))g"
+        }
+        return "\(String(format: "%.1f", value))g"
     }
 }

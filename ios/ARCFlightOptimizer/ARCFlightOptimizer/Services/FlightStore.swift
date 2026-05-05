@@ -290,7 +290,8 @@ final class FlightStore: ObservableObject {
         descentSystem: String,
         eggStatus: EggStatus,
         notes: String,
-        attachments: [FlightAttachment]? = nil
+        attachments: [FlightAttachment]? = nil,
+        round: String? = nil
     ) {
         guard let index = flights.firstIndex(where: { $0.id == id }) else { return }
         flights[index].rocketID = rocket.id
@@ -310,7 +311,7 @@ final class FlightStore: ObservableObject {
         if let attachments {
             flights[index].attachments = attachments
         }
-        flights[index].round = flightMode.shortTitle
+        flights[index].round = round ?? flights[index].round ?? flightMode.shortTitle
         recordAILearningInput()
         save()
     }

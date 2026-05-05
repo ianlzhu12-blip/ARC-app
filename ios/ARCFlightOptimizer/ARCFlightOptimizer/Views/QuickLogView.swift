@@ -43,7 +43,7 @@ struct QuickLogView: View {
     }
 
     private var displayedFlights: [Flight] {
-        Array(store.flights.prefix(8))
+        store.flights
     }
 
     private var canSaveFlight: Bool {
@@ -396,11 +396,9 @@ struct QuickLogView: View {
                 Text("No flights logged yet.")
                     .foregroundStyle(.secondary)
             } else {
-                if store.flights.count > displayedFlights.count {
-                    Text("Showing the latest \(displayedFlights.count) of \(store.flights.count) flights. All flights still feed Dashboard and Insights.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
+                Text("Showing all \(displayedFlights.count) logged flights. Spreadsheet imports can be edited or deleted here too.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 LazyVStack(spacing: 10) {
                     ForEach(Array(displayedFlights.enumerated()), id: \.element.id) { index, flight in
                     VStack(alignment: .leading, spacing: 8) {
@@ -414,7 +412,7 @@ struct QuickLogView: View {
                                         .font(.caption.weight(.bold))
                                         .foregroundStyle(Color.arcMint)
                                 }
-                                Text("\(Int(flight.measuredAltitudeFeet)) ft • \(flight.motorDesignation)")
+                                Text("\(Int(flight.measuredAltitudeFeet)) ft • \(flight.motorDesignation) • \(formattedGrams(flight.rocketMassGrams))")
                                     .foregroundStyle(.secondary)
                                 if (flight.round ?? "") == FlightMode.nationals.shortTitle {
                                     Text("Target: \(Int(store.scoringTargetAltitude(for: flight))) ft")
@@ -785,6 +783,13 @@ struct QuickLogView: View {
     private func signedInt(_ value: Double) -> String {
         let rounded = Int(value.rounded())
         return rounded >= 0 ? "+\(rounded)" : "\(rounded)"
+    }
+
+    private func formattedGrams(_ value: Double) -> String {
+        if value.rounded() == value {
+            return "\(Int(value))g"
+        }
+        return "\(String(format: "%.1f", value))g"
     }
 
     private func primeDefaultValues() {

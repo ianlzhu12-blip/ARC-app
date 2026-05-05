@@ -31,7 +31,6 @@ struct AccountView: View {
     @State private var overrideFinalsDate = ""
     @State private var overrideFinalsLocation = ""
     @State private var showManualOverrides = false
-    private let aiImportServerURL = "http://127.0.0.1:5173"
 
     var body: some View {
         NavigationStack {
@@ -588,7 +587,7 @@ struct AccountView: View {
                 flight.flownAt.formatted(date: .numeric, time: .shortened),
                 rocketName,
                 flight.motorDesignation,
-                "\(Int(flight.rocketMassGrams))",
+                formattedGrams(flight.rocketMassGrams),
                 flight.targetAltitudeFeet.map { "\(Int($0))" } ?? "",
                 "\(Int(flight.measuredAltitudeFeet))",
                 flight.flightTimeSeconds.map { String(format: "%.1f", $0) } ?? "",
@@ -646,11 +645,9 @@ struct AccountView: View {
             }
 
             var importedCount = 0
-            var aiImportedCount = 0
             var localImportedCount = 0
             var attachedOnly: [String] = []
             var unreadableFiles: [String] = []
-            var aiFallbackFiles: [String] = []
             for url in urls {
                 let didAccess = url.startAccessingSecurityScopedResource()
                 defer {
@@ -667,49 +664,24 @@ struct AccountView: View {
                 if !attachedSheetNames.contains(fileName) {
                     attachedSheetNames.append(fileName)
                 }
-                let text = spreadsheetText(from: data, fileName: fileName)
-                guard let text else {
+                let sheetTexts = spreadsheetTexts(from: data, fileName: fileName)
+                guard !sheetTexts.isEmpty else {
                     attachedOnly.append(fileName)
                     continue
                 }
-                let remoteRows: [RemoteFlightRow]?
-                do {
-                    remoteRows = try await AIBackendClient(baseURLString: aiImportServerURL).importFlightSheet(text: text, fileName: fileName)
-                } catch {
-                    remoteRows = nil
-                    aiFallbackFiles.append(fileName)
+                let flights = sheetTexts.flatMap { sheetText in
+                    parseFlightSheet(sheetText.text, fileName: sheetText.name)
                 }
-
-                let flights: [Flight]
-                if let remoteRows, !remoteRows.isEmpty {
-                    let remoteFlights = flightLogs(from: remoteRows)
-                    if remoteFlights.isEmpty {
-                        aiFallbackFiles.append(fileName)
-                        flights = parseFlightSheet(text, fileName: fileName)
-                        localImportedCount += flights.count
-                    } else {
-                        flights = remoteFlights
-                        aiImportedCount += flights.count
-                    }
+                if flights.isEmpty {
+                    attachedOnly.append(fileName)
                 } else {
-                    if remoteRows != nil {
-                        aiFallbackFiles.append(fileName)
-                    }
-                    flights = parseFlightSheet(text, fileName: fileName)
                     localImportedCount += flights.count
+                    importedCount += flights.count
+                    store.importFlights(flights)
                 }
-                importedCount += flights.count
-                store.importFlights(flights)
             }
             if importedCount > 0 {
-                if aiImportedCount > 0 {
-                    let fallbackText = localImportedCount > 0 ? " Local backup imported \(localImportedCount)." : ""
-                    statusMessage = "AI converted \(aiImportedCount) editable flight logs.\(fallbackText) They now feed graphs and weight calculations."
-                } else if !aiFallbackFiles.isEmpty {
-                    statusMessage = "Imported \(importedCount) editable flight logs with the built-in sheet reader. They now feed graphs and weight calculations."
-                } else {
-                    statusMessage = "Imported \(importedCount) editable flight logs. They now feed graphs and weight calculations."
-                }
+                statusMessage = "Imported \(localImportedCount) editable flight logs. They now feed graphs, summaries, and weight calculations."
             } else if !unreadableFiles.isEmpty {
                 statusMessage = "Could not read \(unreadableFiles.count) selected file(s). Try saving the sheet to Files as .xlsx, .csv, or tab-separated text, then import again."
             } else if !attachedOnly.isEmpty {
@@ -740,47 +712,6 @@ struct AccountView: View {
         return try Data(contentsOf: url)
     }
 
-    private func flightLogs(from rows: [RemoteFlightRow]) -> [Flight] {
-        guard let fallbackRocket = store.rockets.first else { return [] }
-        return rows.compactMap { row in
-            guard let altitude = row.altitudeFeet else { return nil }
-            let rocketName = row.rocketName?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let rocket = store.rockets.first {
-                guard let rocketName, !rocketName.isEmpty else { return false }
-                return $0.name.caseInsensitiveCompare(rocketName) == .orderedSame
-            } ?? fallbackRocket
-            let motor = row.motorDesignation?.isEmpty == false ? row.motorDesignation! : rocket.defaultMotorDesignation
-            let egg = row.eggStatus.flatMap(sheetEggStatus) ?? .unknown
-            let attachmentNames = row.attachments?
-                .components(separatedBy: " | ")
-                .filter { !$0.isEmpty } ?? []
-            return Flight(
-                rocketID: rocket.id,
-                teamID: rocket.teamID,
-                flownAt: row.flownAtText.flatMap(sheetDate) ?? Date(),
-                motorType: MotorCatalog.motor(named: motor)?.motorClass ?? .other,
-                motorDesignation: motor,
-                rocketMassGrams: row.massGrams ?? rocket.dryMassGrams + 90,
-                weather: Weather(
-                    temperatureF: row.temperatureF ?? 72,
-                    windMPH: row.windMPH ?? 0,
-                    humidityPercent: row.humidityPercent ?? 45,
-                    location: "Imported"
-                ),
-                measuredAltitudeFeet: altitude,
-                targetAltitudeFeet: row.targetAltitudeFeet,
-                flightTimeSeconds: row.flightTimeSeconds,
-                parachuteSizeInches: row.parachuteSizeInches ?? rocket.parachuteSizeInches,
-                parachuteReefedCentimeters: row.parachuteReefedCentimeters,
-                descentSystem: "Imported",
-                eggStatus: egg,
-                notes: row.notes ?? "",
-                attachments: attachmentNames.map { FlightAttachment(fileName: $0) },
-                round: store.flightMode.shortTitle
-            )
-        }
-    }
-
     private func parseFlightSheet(_ text: String, fileName: String) -> [Flight] {
         guard let fallbackRocket = store.rockets.first else { return [] }
         let lines = text
@@ -791,7 +722,8 @@ struct AccountView: View {
         let rows = lines.map { parseDelimitedLine($0, delimiter: delimiter) }
         guard let headerRowIndex = inferredHeaderRowIndex(in: rows) else { return [] }
         let headers = rows[headerRowIndex]
-        let columnMap = inferredColumnMap(headers: headers)
+        let dataRows = Array(rows.dropFirst(headerRowIndex + 1))
+        let columnMap = inferredColumnMap(headers: headers, rows: dataRows)
 
         return rows.dropFirst(headerRowIndex + 1).compactMap { columns in
             guard !isLikelyHeaderOrEmptyRow(columns, headers: headers) else { return nil }
@@ -807,7 +739,8 @@ struct AccountView: View {
             let rocketName = value(in: columns, columnMap: columnMap, role: .rocket) ?? fallbackRocket.name
             let rocket = matchedRocket(named: rocketName) ?? fallbackRocket
             let motor = normalizedMotorDesignation(value(in: columns, columnMap: columnMap, role: .motor)) ?? rocket.defaultMotorDesignation
-            let mass = value(in: columns, columnMap: columnMap, role: .mass)
+            let massText = value(in: columns, columnMap: columnMap, role: .mass)
+            let mass = massText
                 .flatMap {
                     plausibleSheetNumber(
                         $0,
@@ -817,6 +750,7 @@ struct AccountView: View {
                     )
                 }
                 ?? rocket.dryMassGrams + 90
+            let rowNotes = value(in: columns, columnMap: columnMap, role: .notes) ?? ""
             let targetAltitude = value(in: columns, columnMap: columnMap, role: .targetAltitude)
                 .flatMap {
                     plausibleSheetNumber(
@@ -826,6 +760,7 @@ struct AccountView: View {
                         defaultUnit: .feet
                     )
                 }
+                ?? inferredTargetAltitude(from: [rocketName, rowNotes])
             let time = value(in: columns, columnMap: columnMap, role: .time)
                 .flatMap {
                     plausibleSheetNumber(
@@ -882,7 +817,17 @@ struct AccountView: View {
                         header: header(for: .reefedCentimeters, headers: headers, columnMap: columnMap)
                     )
                 }
-            let notes = value(in: columns, columnMap: columnMap, role: .notes) ?? ""
+                ?? inferredReefedCentimeters(from: [rocketName, rowNotes])
+            let weatherConditions = value(in: columns, columnMap: columnMap, role: .weatherConditions)
+            let recoveryBlanket = value(in: columns, columnMap: columnMap, role: .recoveryBlanket)
+            let importedPoints = value(in: columns, columnMap: columnMap, role: .importedPoints)
+            let enrichedNotes = [
+                rowNotes,
+                massText.map { _ in "Imported loaded mass: \(formattedGrams(mass))" },
+                weatherConditions.map { "Weather conditions: \($0)" },
+                recoveryBlanket.map { "Recovery blanket/wadding: \($0)" },
+                importedPoints.map { "Imported sheet points: \($0)" }
+            ].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
             let date = value(in: columns, columnMap: columnMap, role: .date).flatMap(sheetDate) ?? Date()
             let egg = value(in: columns, columnMap: columnMap, role: .egg).flatMap(sheetEggStatus) ?? .unknown
             let attachmentNames = value(in: columns, columnMap: columnMap, role: .attachments)?
@@ -900,7 +845,7 @@ struct AccountView: View {
                 humidity: humidity
             )
             let warningText = warnings.isEmpty ? "" : "Import warning: \(warnings.joined(separator: "; "))."
-            let importedNotes = [notes, warningText, importSummary].filter { !$0.isEmpty }.joined(separator: "\n")
+            let importedNotes = [enrichedNotes, warningText, importSummary].filter { !$0.isEmpty }.joined(separator: "\n")
             return Flight(
                 rocketID: rocket.id,
                 teamID: rocket.teamID,
@@ -936,6 +881,9 @@ struct AccountView: View {
         case humidity
         case parachute
         case reefedCentimeters
+        case weatherConditions
+        case recoveryBlanket
+        case importedPoints
         case egg
         case notes
         case attachments
@@ -1034,18 +982,22 @@ struct AccountView: View {
         case .humidity: return humidityKeys + ["humid", "humidity percent"]
         case .parachute: return parachuteKeys + ["parachute diameter", "chute diameter", "recovery size"]
         case .reefedCentimeters: return reefedCentimetersKeys + ["reefed centimeters", "reef centimeters", "reefed amount", "reef amount"]
+        case .weatherConditions: return ["weather conditions", "conditions", "sky", "clouds", "field weather"]
+        case .recoveryBlanket: return ["dog barf", "dog barf g", "nomex", "wadding", "recovery blanket", "blanket"]
+        case .importedPoints: return ["how many points", "points", "score", "flight score", "arc points"]
         case .egg: return eggKeys + ["egg result", "egg outcome", "payload result"]
         case .notes: return notesKeys + ["description", "remarks", "field notes"]
         case .attachments: return attachmentKeys + ["attachment names", "photo", "photos", "document"]
         }
     }
 
-    private func inferredColumnMap(headers: [String]) -> [SheetColumnRole: Int] {
+    private func inferredColumnMap(headers: [String], rows: [[String]]) -> [SheetColumnRole: Int] {
         var assignments: [SheetColumnRole: Int] = [:]
         var usedColumns = Set<Int>()
         let candidates = SheetColumnRole.allCases.flatMap { role in
             headers.enumerated().map { index, header in
-                (role: role, index: index, score: columnScore(header, for: role))
+                let score = columnScore(header, for: role) + columnDataScore(index: index, role: role, header: header, rows: rows)
+                return (role: role, index: index, score: score)
             }
         }
         .filter { $0.score >= minimumColumnScore(for: $0.role) }
@@ -1060,6 +1012,58 @@ struct AccountView: View {
             usedColumns.insert(candidate.index)
         }
         return assignments
+    }
+
+    private func columnDataScore(index: Int, role: SheetColumnRole, header: String, rows: [[String]]) -> Double {
+        let values = rows.prefix(80).compactMap { row -> String? in
+            guard row.indices.contains(index) else { return nil }
+            let value = row[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+        guard !values.isEmpty else { return 0 }
+
+        let sampled = values.prefix(40)
+        let plausibleCount = sampled.filter { value in
+            isPlausibleValue(value, role: role, header: header)
+        }.count
+        let ratio = Double(plausibleCount) / Double(sampled.count)
+        let numericRoles: Set<SheetColumnRole> = [.altitude, .targetAltitude, .mass, .time, .temperature, .wind, .humidity, .parachute, .reefedCentimeters]
+        let base = numericRoles.contains(role) ? 4.0 : 2.2
+        return ratio * base
+    }
+
+    private func isPlausibleValue(_ value: String, role: SheetColumnRole, header: String) -> Bool {
+        switch role {
+        case .altitude, .targetAltitude, .mass, .time, .temperature, .wind, .humidity, .parachute:
+            return plausibleSheetNumber(value, role: role, header: header, defaultUnit: defaultUnit(for: role)) != nil
+        case .reefedCentimeters:
+            return plausibleReefedCentimeters(value, header: header) != nil
+        case .date:
+            return sheetDate(value) != nil
+        case .egg:
+            return sheetEggStatus(value) != nil
+        case .motor:
+            return normalizedMotorDesignation(value).map {
+                MotorCatalog.motor(named: $0) != nil ||
+                    $0.range(of: #"[A-H][0-9]"#, options: .regularExpression) != nil
+            } ?? false
+        case .rocket, .weatherConditions, .recoveryBlanket, .importedPoints, .notes, .attachments:
+            return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private func defaultUnit(for role: SheetColumnRole) -> SheetUnit? {
+        switch role {
+        case .altitude, .targetAltitude: return .feet
+        case .mass: return .grams
+        case .time: return .seconds
+        case .temperature: return .fahrenheit
+        case .wind: return .mph
+        case .humidity: return .percent
+        case .parachute: return .inches
+        case .reefedCentimeters: return .centimeters
+        default: return nil
+        }
     }
 
     private func columnScore(_ header: String, for role: SheetColumnRole) -> Double {
@@ -1135,6 +1139,8 @@ struct AccountView: View {
             return normalizedHeader.contains("reef") ? 5 : 0
         case .reefedCentimeters:
             return normalizedHeader.contains("diameter") || normalizedHeader.contains("size") ? 4 : 0
+        case .recoveryBlanket:
+            return normalizedHeader.contains("weight") || normalizedHeader.contains("mass") ? 6 : 0
         case .wind:
             return normalizedHeader.contains("direction") ? 4 : 0
         default:
@@ -1158,7 +1164,10 @@ struct AccountView: View {
             (.wind, "wind"),
             (.humidity, "humidity"),
             (.parachute, "chute"),
-            (.reefedCentimeters, "reef cm")
+            (.reefedCentimeters, "reef cm"),
+            (.weatherConditions, "conditions"),
+            (.recoveryBlanket, "recovery"),
+            (.importedPoints, "points")
         ]
         let mapped = labels.compactMap { role, label -> String? in
             guard let index = columnMap[role], headers.indices.contains(index) else { return nil }
@@ -1236,21 +1245,40 @@ struct AccountView: View {
         return trimmed.uppercased()
     }
 
-    private func spreadsheetText(from data: Data, fileName: String) -> String? {
+    private struct SheetText {
+        var name: String
+        var text: String
+    }
+
+    private func spreadsheetTexts(from data: Data, fileName: String) -> [SheetText] {
         let lowercasedName = fileName.lowercased()
-        if lowercasedName.hasSuffix(".xlsx"), let rows = xlsxRows(from: data), !rows.isEmpty {
-            return rows.map { row in row.map(sheetEscape).joined(separator: "\t") }.joined(separator: "\n")
+        if lowercasedName.hasSuffix(".xlsx") {
+            let worksheets = xlsxWorksheets(from: data)
+            return worksheets.compactMap { worksheet in
+                guard inferredHeaderRowIndex(in: worksheet.rows) != nil else { return nil }
+                let text = worksheet.rows
+                    .map { row in row.map(sheetEscape).joined(separator: "\t") }
+                    .joined(separator: "\n")
+                return SheetText(name: "\(fileName) • \(worksheet.name)", text: text)
+            }
         }
         if let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16) {
-            return text
+            return [SheetText(name: fileName, text: text)]
         }
-        return nil
+        return []
     }
 
     private func sheetEscape(_ value: String) -> String {
         value
             .replacingOccurrences(of: "\t", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
+    }
+
+    private func formattedGrams(_ value: Double) -> String {
+        if value.rounded() == value {
+            return "\(Int(value))g"
+        }
+        return "\(String(format: "%.1f", value))g"
     }
 
     private func detectedDelimiter(in lines: [String]) -> Character {
@@ -1398,7 +1426,8 @@ struct AccountView: View {
         case .wind:
             return (0...120).contains(number) ? number : nil
         case .humidity:
-            return (0...100).contains(number) ? number : nil
+            let percent = (0...1).contains(number) ? number * 100 : number
+            return (0...100).contains(percent) ? percent : nil
         case .parachute:
             return (1...160).contains(number) ? number : nil
         case .reefedCentimeters:
@@ -1406,6 +1435,39 @@ struct AccountView: View {
         default:
             return number
         }
+    }
+
+    private func inferredTargetAltitude(from values: [String]) -> Double? {
+        for value in values {
+            let lowercased = value.lowercased()
+            let matches = lowercased.matches(for: #"\b([5-9][0-9]{2})\s*(?:ft|feet|foot|')?\b"#)
+            for match in matches {
+                if let altitude = Double(match), (500...900).contains(altitude) {
+                    return altitude
+                }
+            }
+        }
+        return nil
+    }
+
+    private func inferredReefedCentimeters(from values: [String]) -> Double? {
+        let combined = values.joined(separator: " ").lowercased()
+        if combined.contains("no reef") || combined.contains("0 reef") {
+            return 0
+        }
+        guard combined.contains("reef") else { return nil }
+        let patterns = [
+            #"reef(?:ed|ing)?\s*(?:a\s*)?(?:bit\s*)?([0-9]+(?:\.[0-9]+)?)\s*(?:cm|centimeter|centimeters)"#,
+            #"([0-9]+(?:\.[0-9]+)?)\s*(?:cm|centimeter|centimeters)\s*(?:reef|reefed|reefing)"#
+        ]
+        for pattern in patterns {
+            if let match = combined.firstMatch(for: pattern),
+               let centimeters = Double(match),
+               (0...500).contains(centimeters) {
+                return centimeters
+            }
+        }
+        return nil
     }
 
     private func plausibleReefedCentimeters(_ value: String, header: String) -> Double? {
@@ -1517,29 +1579,28 @@ struct AccountView: View {
     private func sheetEggStatus(_ value: String) -> EggStatus? {
         let normalized = value.lowercased()
         if normalized.contains("not") || normalized.contains("none") || normalized.contains("no egg") { return .notCarried }
-        if normalized.contains("intact") || normalized.contains("safe") || normalized.contains("ok") { return .intact }
+        if normalized.contains("intact") || normalized.contains("safe") || normalized.contains("ok") || normalized.contains("good") { return .intact }
         if normalized.contains("crack") { return .cracked }
         if normalized.contains("break") || normalized.contains("broken") { return .broken }
         return .unknown
     }
 
-    private func xlsxRows(from data: Data) -> [[String]]? {
-        guard let archive = SimpleZIPArchive(data: data) else { return nil }
+    private struct XLSXWorksheet {
+        var name: String
+        var rows: [[String]]
+    }
+
+    private func xlsxWorksheets(from data: Data) -> [XLSXWorksheet] {
+        guard let archive = SimpleZIPArchive(data: data) else { return [] }
         let sharedStrings = archive.textFile(named: "xl/sharedStrings.xml").map(parseSharedStrings) ?? []
-        let worksheets = archive.fileNames
+        return archive.fileNames
             .filter { $0.hasPrefix("xl/worksheets/sheet") && $0.hasSuffix(".xml") }
             .sorted()
-            .compactMap { sheetName -> [[String]]? in
+            .compactMap { sheetName -> XLSXWorksheet? in
                 guard let sheetXML = archive.textFile(named: sheetName) else { return nil }
-                return parseWorksheetRows(sheetXML, sharedStrings: sharedStrings)
-            }
-            .filter { !$0.isEmpty }
-
-        return worksheets
-            .max { left, right in
-                let leftScore = inferredHeaderRowIndex(in: left).map { left[$0].count } ?? 0
-                let rightScore = inferredHeaderRowIndex(in: right).map { right[$0].count } ?? 0
-                return leftScore < rightScore
+                let rows = parseWorksheetRows(sheetXML, sharedStrings: sharedStrings)
+                guard !rows.isEmpty else { return nil }
+                return XLSXWorksheet(name: sheetName.replacingOccurrences(of: "xl/worksheets/", with: ""), rows: rows)
             }
     }
 
@@ -1744,60 +1805,6 @@ private extension Data {
             return output
         }
     }
-}
-
-private struct AIBackendClient {
-    var baseURLString: String
-
-    var baseURL: URL? {
-        let trimmed = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        return URL(string: trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed)
-    }
-
-    func importFlightSheet(text: String, fileName: String) async throws -> [RemoteFlightRow] {
-        guard let baseURL else { return [] }
-        var request = URLRequest(url: baseURL.appendingPathComponent("api/import-flight-sheet"))
-        request.httpMethod = "POST"
-        request.timeoutInterval = 20
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder.arc.encode(RemoteFlightSheetRequest(fileName: fileName, text: text))
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, 200..<300 ~= httpResponse.statusCode else {
-            throw URLError(.badServerResponse)
-        }
-        return try JSONDecoder.arc.decode(RemoteFlightSheetResponse.self, from: data).rows
-    }
-}
-
-private struct RemoteFlightSheetRequest: Codable {
-    var fileName: String
-    var text: String
-}
-
-private struct RemoteFlightSheetResponse: Codable {
-    var rows: [RemoteFlightRow]
-    var message: String?
-    var source: String?
-}
-
-private struct RemoteFlightRow: Codable {
-    var rocketName: String?
-    var motorDesignation: String?
-    var massGrams: Double?
-    var targetAltitudeFeet: Double?
-    var altitudeFeet: Double?
-    var flightTimeSeconds: Double?
-    var temperatureF: Double?
-    var windMPH: Double?
-    var humidityPercent: Double?
-    var parachuteSizeInches: Double?
-    var parachuteReefedCentimeters: Double?
-    var notes: String?
-    var flownAtText: String?
-    var eggStatus: String?
-    var attachments: String?
 }
 
 private struct FlightSheetDocument: FileDocument {

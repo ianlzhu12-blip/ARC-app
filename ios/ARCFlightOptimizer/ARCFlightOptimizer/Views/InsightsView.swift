@@ -29,6 +29,7 @@ struct InsightsView: View {
     @State private var cachedOptimization: OptimizationResult?
     @State private var cachedRecommendations: [Recommendation] = []
     @State private var cachedCalibrationMeanError: Double?
+    @State private var cachedDataSummary = AIDataSummary.empty
     @State private var isRefreshingInsights = false
 
     private var availableMotors: [MotorSpec] {
@@ -277,6 +278,7 @@ struct InsightsView: View {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 16) {
                     predictionCard
+                    dataSummaryCard
                     todayConditionsCard
                     calibrationCard
                     recommendationCard
@@ -530,6 +532,32 @@ struct InsightsView: View {
                 .padding()
                 .background(priorityColor(recommendation.priority).opacity(0.14), in: RoundedRectangle(cornerRadius: 16))
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(priorityColor(recommendation.priority).opacity(0.5)))
+            }
+        }
+        .cardStyle()
+    }
+
+    private var dataSummaryCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("AI Data Summary", systemImage: "sparkles")
+                .font(.title3.bold())
+            Text(cachedDataSummary.headline)
+                .font(.headline)
+            ForEach(cachedDataSummary.insights, id: \.self) { insight in
+                HStack(alignment: .top, spacing: 8) {
+                    Circle()
+                        .fill(Color.arcMint)
+                        .frame(width: 7, height: 7)
+                        .padding(.top, 7)
+                    Text(insight)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let nextStep = cachedDataSummary.nextStep {
+                Text(nextStep)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color.arcAmber)
+                    .padding(.top, 2)
             }
         }
         .cardStyle()
@@ -844,13 +872,20 @@ struct InsightsView: View {
                 modelFlights: flights,
                 rocket: rocket
             )
-            return (prediction, optimization, recommendations, meanError)
+            let summary = Self.summarizeData(
+                flights: flights,
+                targetAltitude: targetAltitude,
+                targetFlightTimeRange: targetFlightTimeRange,
+                optimization: optimization
+            )
+            return (prediction, optimization, recommendations, meanError, summary)
         }.value
 
         cachedPrediction = result.0
         cachedOptimization = result.1
         cachedRecommendations = result.2
         cachedCalibrationMeanError = result.3
+        cachedDataSummary = result.4
         isRefreshingInsights = false
     }
 
@@ -990,6 +1025,131 @@ struct InsightsView: View {
         return errors.isEmpty ? nil : errors.reduce(0, +) / Double(errors.count)
     }
 
+    nonisolated private static func summarizeData(
+        flights: [Flight],
+        targetAltitude: Double,
+        targetFlightTimeRange: ClosedRange<Double>?,
+        optimization: OptimizationResult?
+    ) -> AIDataSummary {
+        let usable = flights.filter { !$0.excludedFromAI && $0.measuredAltitudeFeet.isFinite && $0.rocketMassGrams.isFinite }
+        guard !usable.isEmpty else {
+            return AIDataSummary(
+                headline: "No flight data yet.",
+                insights: [
+                    "Add a few flights with altitude, loaded mass, motor, weather, flight time, and reefed centimeters so the model can learn from your team.",
+                    "Spreadsheet imports and analyzed videos will also feed this summary once they create editable flight logs."
+                ],
+                nextStep: "Best next step: log or import at least 3 flights for the same rocket."
+            )
+        }
+
+        let altitudes = usable.map(\.measuredAltitudeFeet)
+        let masses = usable.map(\.rocketMassGrams)
+        let averageAltitude = average(altitudes)
+        let averageMass = average(masses)
+        let bestAltitude = altitudes.max() ?? averageAltitude
+        let targetErrors = usable.map { abs(($0.targetAltitudeFeet ?? targetAltitude) - $0.measuredAltitudeFeet) }
+        let averageTargetMiss = average(targetErrors)
+        let bestTargetMiss = targetErrors.min() ?? averageTargetMiss
+        let timedFlights = usable.filter { $0.flightTimeSeconds != nil }
+        let reefedFlights = timedFlights.filter { $0.parachuteReefedCentimeters != nil }
+        let videoAnalyzedFlights = usable.filter { flight in
+            flight.attachments.contains { ($0.analysisSummary?.isEmpty == false) || $0.videoEstimatedFlightTimeSeconds != nil }
+        }
+        let importedFlights = usable.filter { $0.notes.localizedCaseInsensitiveContains("import") }
+        let slope = linearSlope(x: usable.map(\.rocketMassGrams), y: usable.map(\.measuredAltitudeFeet))
+        let windSlope = linearSlope(x: usable.map(\.weather.windMPH), y: usable.map(\.measuredAltitudeFeet))
+
+        let groupedByWantedAltitude = Dictionary(grouping: usable) { flight in
+            Int(((flight.targetAltitudeFeet ?? targetAltitude) / 25).rounded() * 25)
+        }
+        let bestGroup = groupedByWantedAltitude
+            .filter { $0.value.count >= 2 }
+            .map { target, group -> (target: Int, count: Int, miss: Double) in
+                let misses = group.map { abs(($0.targetAltitudeFeet ?? Double(target)) - $0.measuredAltitudeFeet) }
+                return (target, group.count, average(misses))
+            }
+            .min { $0.miss < $1.miss }
+
+        let trendText: String
+        if usable.count >= 3, let slope, slope.isFinite, abs(slope) >= 0.05 {
+            let direction = slope < 0 ? "more weight has usually lowered altitude" : "more weight has usually raised altitude"
+            trendText = "Weight trend: \(direction) by about \(String(format: "%.1f", abs(slope))) ft per gram in the current filtered data."
+        } else {
+            trendText = "Weight trend: not enough varied mass data yet to trust a precise ft-per-gram slope."
+        }
+
+        let weatherText: String
+        if usable.count >= 4, let windSlope, windSlope.isFinite, abs(windSlope) >= 1.0 {
+            let direction = windSlope < 0 ? "lower" : "higher"
+            weatherText = "Weather signal: higher wind has correlated with \(direction) altitude by about \(Int(abs(windSlope).rounded())) ft per mph."
+        } else {
+            weatherText = "Weather signal: keep logging live weather; the current wind/altitude relationship is still weak."
+        }
+
+        var insights: [String] = [
+            "\(usable.count) flights are feeding the model. Average altitude is \(Int(averageAltitude.rounded())) ft, best altitude is \(Int(bestAltitude.rounded())) ft, and average loaded mass is \(Int(averageMass.rounded())) g.",
+            "Target accuracy: average miss is \(Int(averageTargetMiss.rounded())) ft, with the best logged miss at \(Int(bestTargetMiss.rounded())) ft.",
+            trendText,
+            weatherText
+        ]
+
+        if let optimization {
+            let massDirection = optimization.massDeltaGrams < 0 ? "remove" : "add"
+            insights.append("Current tuner output: \(massDirection) about \(Int(abs(optimization.massDeltaGrams).rounded())) g to aim near \(Int(targetAltitude.rounded())) ft; predicted apogee is \(Int(optimization.suggestedAltitudeFeet.rounded())) ft.")
+        } else {
+            insights.append("Current tuner output: add a rocket and selected motor so the app can summarize the exact weight recommendation.")
+        }
+
+        if let targetFlightTimeRange {
+            if timedFlights.isEmpty {
+                insights.append("Timing: no flight-time logs yet, so delay drilling and reefing advice is still low confidence.")
+            } else {
+                let averageTime = average(timedFlights.compactMap(\.flightTimeSeconds))
+                let timeStatus = targetFlightTimeRange.contains(averageTime) ? "inside" : "outside"
+                insights.append("Timing: \(timedFlights.count) timed flights average \(String(format: "%.1f", averageTime)) s, \(timeStatus) the \(Int(targetFlightTimeRange.lowerBound))-\(Int(targetFlightTimeRange.upperBound)) s window.")
+            }
+
+            if !reefedFlights.isEmpty {
+                let averageReef = average(reefedFlights.compactMap(\.parachuteReefedCentimeters))
+                insights.append("Recovery data: \(reefedFlights.count) logs include reefing, averaging \(String(format: "%.1f", averageReef)) cm reefed.")
+            }
+        }
+
+        if let bestGroup {
+            insights.append("Best repeated target group: flights aimed near \(bestGroup.target) ft average \(Int(bestGroup.miss.rounded())) ft off across \(bestGroup.count) logs.")
+        }
+
+        if videoAnalyzedFlights.isEmpty {
+            insights.append("Video coverage: no analyzed videos are attached to these logs yet.")
+        } else {
+            insights.append("Video coverage: \(videoAnalyzedFlights.count) flights include analyzed video signals that can explain boost, coast, deployment, or descent issues.")
+        }
+
+        if !importedFlights.isEmpty {
+            insights.append("Imported sheet data: \(importedFlights.count) logs appear to come from flight-sheet imports and are included in the same calculations.")
+        }
+
+        let nextStep: String
+        if usable.count < 4 {
+            nextStep = "Best next step: add more flights before trusting small weight changes."
+        } else if Set(usable.map { Int($0.rocketMassGrams / 10) }).count < 3 {
+            nextStep = "Best next step: fly the same setup at 2-3 different masses so the weight recommendation tightens."
+        } else if targetFlightTimeRange != nil && reefedFlights.count < 3 {
+            nextStep = "Best next step: log flight time and reefed centimeters on the next few flights so recovery advice improves."
+        } else if videoAnalyzedFlights.isEmpty {
+            nextStep = "Best next step: analyze one launch video so the app can connect performance changes to what happened in flight."
+        } else {
+            nextStep = "Best next step: repeat the current recommended setup and use the result to tighten the model."
+        }
+
+        return AIDataSummary(
+            headline: "Your logbook is strongest around \(Int(averageMass.rounded())) g and \(Int(averageAltitude.rounded())) ft.",
+            insights: Array(insights.prefix(8)),
+            nextStep: nextStep
+        )
+    }
+
     private func calibrationHint(for flights: [Flight]) -> String {
         if flights.count < 4 {
             return "Best next step: log more flights before trusting fine weight changes."
@@ -1037,6 +1197,30 @@ struct InsightsView: View {
         return (0..<limit).map { values[Int((Double($0) * step).rounded())] }
     }
 
+    nonisolated private static func average(_ values: [Double]) -> Double {
+        let finite = values.filter(\.isFinite)
+        guard !finite.isEmpty else { return 0 }
+        return finite.reduce(0, +) / Double(finite.count)
+    }
+
+    nonisolated private static func linearSlope(x: [Double], y: [Double]) -> Double? {
+        let pairs = zip(x, y).filter { $0.0.isFinite && $0.1.isFinite }
+        guard pairs.count >= 3 else { return nil }
+        let xs = pairs.map(\.0)
+        let ys = pairs.map(\.1)
+        let meanX = average(xs)
+        let meanY = average(ys)
+        let denominator = xs.reduce(0) { total, value in
+            let delta = value - meanX
+            return total + delta * delta
+        }
+        guard denominator > 0 else { return nil }
+        let numerator = zip(xs, ys).reduce(0) { total, pair in
+            total + (pair.0 - meanX) * (pair.1 - meanY)
+        }
+        return numerator / denominator
+    }
+
     private func priorityColor(_ priority: Recommendation.Priority) -> Color {
         switch priority {
         case .high: return Color.arcOrange
@@ -1050,4 +1234,16 @@ private struct TrendPoint: Identifiable {
     var id: String { "\(x)-\(y)" }
     var x: Double
     var y: Double
+}
+
+private struct AIDataSummary {
+    var headline: String
+    var insights: [String]
+    var nextStep: String?
+
+    static let empty = AIDataSummary(
+        headline: "Summarizing your flight data...",
+        insights: ["The summary updates automatically when logs, imports, videos, weather, or targets change."],
+        nextStep: nil
+    )
 }
