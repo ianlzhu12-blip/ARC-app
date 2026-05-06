@@ -646,6 +646,7 @@ struct AccountView: View {
 
             var importedCount = 0
             var localImportedCount = 0
+            var replacedImportedCount = 0
             var attachedOnly: [String] = []
             var unreadableFiles: [String] = []
             for url in urls {
@@ -677,11 +678,14 @@ struct AccountView: View {
                 } else {
                     localImportedCount += flights.count
                     importedCount += flights.count
-                    store.importFlights(flights)
+                    let sourceNames = Set(sheetTexts.map(\.name) + [fileName])
+                    let replacement = store.replaceImportedFlights(flights, sourceNames: sourceNames)
+                    replacedImportedCount += replacement.removed
                 }
             }
             if importedCount > 0 {
-                statusMessage = "Imported \(localImportedCount) editable flight logs. They now feed graphs, summaries, and weight calculations."
+                let replacementText = replacedImportedCount > 0 ? " Replaced \(replacedImportedCount) older import(s) from the same sheet." : ""
+                statusMessage = "Imported \(localImportedCount) editable flight logs after multi-pass checks.\(replacementText) They now feed graphs, summaries, and weight calculations."
             } else if !unreadableFiles.isEmpty {
                 statusMessage = "Could not read \(unreadableFiles.count) selected file(s). Try saving the sheet to Files as .xlsx, .csv, or tab-separated text, then import again."
             } else if !attachedOnly.isEmpty {
@@ -725,7 +729,7 @@ struct AccountView: View {
         let dataRows = Array(rows.dropFirst(headerRowIndex + 1))
         let columnMap = inferredColumnMap(headers: headers, rows: dataRows)
 
-        return rows.dropFirst(headerRowIndex + 1).compactMap { columns in
+        let parsedFlights: [Flight] = rows.dropFirst(headerRowIndex + 1).enumerated().compactMap { rowOffset, columns -> Flight? in
             guard !isLikelyHeaderOrEmptyRow(columns, headers: headers) else { return nil }
             guard let altitudeText = value(in: columns, columnMap: columnMap, role: .altitude),
                   let altitude = plausibleSheetNumber(
@@ -740,16 +744,15 @@ struct AccountView: View {
             let rocket = matchedRocket(named: rocketName) ?? fallbackRocket
             let motor = normalizedMotorDesignation(value(in: columns, columnMap: columnMap, role: .motor)) ?? rocket.defaultMotorDesignation
             let massText = value(in: columns, columnMap: columnMap, role: .mass)
-            let mass = massText
-                .flatMap {
-                    plausibleSheetNumber(
-                        $0,
-                        role: .mass,
-                        header: header(for: .mass, headers: headers, columnMap: columnMap),
-                        defaultUnit: .grams
-                    )
-                }
-                ?? rocket.dryMassGrams + 90
+            let parsedMass = massText.flatMap {
+                plausibleSheetNumber(
+                    $0,
+                    role: .mass,
+                    header: header(for: .mass, headers: headers, columnMap: columnMap),
+                    defaultUnit: .grams
+                )
+            }
+            let mass = parsedMass ?? rocket.dryMassGrams + 90
             let rowNotes = value(in: columns, columnMap: columnMap, role: .notes) ?? ""
             let targetAltitude = value(in: columns, columnMap: columnMap, role: .targetAltitude)
                 .flatMap {
@@ -761,6 +764,9 @@ struct AccountView: View {
                     )
                 }
                 ?? inferredTargetAltitude(from: [rocketName, rowNotes])
+            guard isReasonableImportedAltitude(altitude, targetAltitude: targetAltitude) else {
+                return nil
+            }
             let time = value(in: columns, columnMap: columnMap, role: .time)
                 .flatMap {
                     plausibleSheetNumber(
@@ -810,26 +816,50 @@ struct AccountView: View {
                     )
                 }
                 ?? rocket.parachuteSizeInches
-            let reefedCentimeters = value(in: columns, columnMap: columnMap, role: .reefedCentimeters)
+            let reefedFromName = inferredReefedCentimeters(from: [rocketName, fileName])
+            let reefedCentimeters = reefedFromName
+                ?? value(in: columns, columnMap: columnMap, role: .reefedCentimeters)
                 .flatMap {
                     plausibleReefedCentimeters(
                         $0,
                         header: header(for: .reefedCentimeters, headers: headers, columnMap: columnMap)
                     )
                 }
-                ?? inferredReefedCentimeters(from: [rocketName, rowNotes])
+                ?? inferredReefedCentimeters(from: [rowNotes])
             let weatherConditions = value(in: columns, columnMap: columnMap, role: .weatherConditions)
             let recoveryBlanket = value(in: columns, columnMap: columnMap, role: .recoveryBlanket)
             let importedPoints = value(in: columns, columnMap: columnMap, role: .importedPoints)
+            let dateText = value(in: columns, columnMap: columnMap, role: .date)
+            let date = dateText.flatMap(sheetDate) ?? Date()
+            let eggText = value(in: columns, columnMap: columnMap, role: .egg)
+            let egg = eggText.flatMap(sheetEggStatus) ?? .unknown
+            let audit = importRowAudit(
+                rowNumber: headerRowIndex + rowOffset + 2,
+                rocketName: rocketName,
+                rocketWasMapped: value(in: columns, columnMap: columnMap, role: .rocket) != nil,
+                mass: mass,
+                massWasMapped: parsedMass != nil,
+                altitude: altitude,
+                altitudeSourceText: altitudeText,
+                targetAltitude: targetAltitude,
+                time: time,
+                dateWasMapped: dateText.flatMap(sheetDate) != nil,
+                weatherWasMapped: value(in: columns, columnMap: columnMap, role: .temperature) != nil ||
+                    value(in: columns, columnMap: columnMap, role: .wind) != nil ||
+                    value(in: columns, columnMap: columnMap, role: .humidity) != nil,
+                eggWasMapped: eggText.flatMap(sheetEggStatus) != nil,
+                importedPoints: importedPoints,
+                notes: rowNotes
+            )
+            guard audit.shouldImport else { return nil }
             let enrichedNotes = [
                 rowNotes,
                 massText.map { _ in "Imported loaded mass: \(formattedGrams(mass))" },
                 weatherConditions.map { "Weather conditions: \($0)" },
                 recoveryBlanket.map { "Recovery blanket/wadding: \($0)" },
-                importedPoints.map { "Imported sheet points: \($0)" }
+                importedPoints.map { "Imported sheet points: \($0)" },
+                audit.noteText
             ].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
-            let date = value(in: columns, columnMap: columnMap, role: .date).flatMap(sheetDate) ?? Date()
-            let egg = value(in: columns, columnMap: columnMap, role: .egg).flatMap(sheetEggStatus) ?? .unknown
             let attachmentNames = value(in: columns, columnMap: columnMap, role: .attachments)?
                 .components(separatedBy: " | ")
                 .filter { !$0.isEmpty } ?? []
@@ -866,6 +896,103 @@ struct AccountView: View {
                 round: store.flightMode.shortTitle
             )
         }
+        return patternCheckedImportedFlights(parsedFlights)
+    }
+
+    private func patternCheckedImportedFlights(_ flights: [Flight]) -> [Flight] {
+        guard flights.count >= 3 else {
+            return flights.map { flight in
+                appendedPatternNote(
+                    to: flight,
+                    note: "Sheet pattern check: passed row checks; not enough imported rows for same-weight pattern validation."
+                )
+            }
+        }
+
+        return flights.compactMap { flight in
+            let sameMassNeighbors = flights.filter {
+                $0.id != flight.id &&
+                $0.motorDesignation == flight.motorDesignation &&
+                abs($0.rocketMassGrams - flight.rocketMassGrams) <= 3
+            }
+            let sameHeightNeighbors = flights.filter {
+                $0.id != flight.id &&
+                $0.motorDesignation == flight.motorDesignation &&
+                abs($0.measuredAltitudeFeet - flight.measuredAltitudeFeet) <= 15
+            }
+            var notes: [String] = []
+
+            if !sameMassNeighbors.isEmpty {
+                let expectedAltitude = median(sameMassNeighbors.map(\.measuredAltitudeFeet))
+                let altitudeDelta = abs(flight.measuredAltitudeFeet - expectedAltitude)
+                if altitudeDelta > max(90, expectedAltitude * 0.12) {
+                    return nil
+                }
+                notes.append("Sheet pattern check: similar weight matched \(sameMassNeighbors.count) row(s), expected height about \(Int(expectedAltitude.rounded())) ft.")
+            }
+
+            if sameHeightNeighbors.count >= 2 {
+                let expectedMass = median(sameHeightNeighbors.map(\.rocketMassGrams))
+                let massDelta = abs(flight.rocketMassGrams - expectedMass)
+                if massDelta > max(80, expectedMass * 0.14) {
+                    return nil
+                }
+                notes.append("Sheet pattern check: similar height matched \(sameHeightNeighbors.count) row(s), expected weight about \(Int(expectedMass.rounded())) g.")
+            }
+
+            if notes.isEmpty, let trendNote = sheetTrendNote(for: flight, in: flights) {
+                notes.append(trendNote)
+            } else if notes.isEmpty {
+                notes.append("Sheet pattern check: passed row checks; no close same-weight or same-height neighbor was available.")
+            }
+
+            return appendedPatternNote(to: flight, note: notes.joined(separator: "\n"))
+        }
+    }
+
+    private func sheetTrendNote(for flight: Flight, in flights: [Flight]) -> String? {
+        guard flights.count >= 6 else { return nil }
+        let masses = flights.map(\.rocketMassGrams)
+        let altitudes = flights.map(\.measuredAltitudeFeet)
+        let averageMass = masses.reduce(0, +) / Double(masses.count)
+        let averageAltitude = altitudes.reduce(0, +) / Double(altitudes.count)
+        let variance = masses.reduce(0) { total, mass in
+            let miss = mass - averageMass
+            return total + miss * miss
+        }
+        guard variance > 0.1 else { return nil }
+
+        let covariance = zip(masses, altitudes).reduce(0) { total, pair in
+            total + (pair.0 - averageMass) * (pair.1 - averageAltitude)
+        }
+        let slope = covariance / variance
+        let intercept = averageAltitude - slope * averageMass
+        let expectedAltitude = slope * flight.rocketMassGrams + intercept
+        let residuals = flights.map { abs($0.measuredAltitudeFeet - (slope * $0.rocketMassGrams + intercept)) }
+        let typicalMiss = median(residuals)
+        let miss = abs(flight.measuredAltitudeFeet - expectedAltitude)
+        if miss > max(150, typicalMiss * 3.5) {
+            return "Sheet pattern check: this row is unusual versus the weight-height trend, so review it after import."
+        }
+        return "Sheet pattern check: row is consistent with the sheet's weight-height trend."
+    }
+
+    private func appendedPatternNote(to flight: Flight, note: String) -> Flight {
+        var checkedFlight = flight
+        checkedFlight.notes = [checkedFlight.notes, note]
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: "\n")
+        return checkedFlight
+    }
+
+    private func median(_ values: [Double]) -> Double {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let midpoint = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return (sorted[midpoint - 1] + sorted[midpoint]) / 2
+        }
+        return sorted[midpoint]
     }
 
     private enum SheetColumnRole: CaseIterable {
@@ -1126,15 +1253,15 @@ struct AccountView: View {
     private func rolePenalty(_ normalizedHeader: String, role: SheetColumnRole) -> Double {
         switch role {
         case .altitude:
-            let blocked = ["target", "wanted", "goal", "desired", "planned", "rocket height", "rocket length", "body length", "length", "diameter", "width", "span", "size"]
+            let blocked = ["target", "wanted", "goal", "desired", "planned", "rocket height", "rocket length", "body length", "length", "diameter", "width", "span", "size", "point", "score"]
             return blocked.contains(where: { normalizedHeader.contains($0) }) ? 7 : 0
         case .targetAltitude:
-            let blocked = ["measured", "actual", "observed", "recorded", "apogee", "max", "peak", "rocket height", "rocket length", "body length", "length", "diameter", "width"]
+            let blocked = ["measured", "actual", "observed", "recorded", "apogee", "max", "peak", "rocket height", "rocket length", "body length", "length", "diameter", "width", "point", "score"]
             return blocked.contains(where: { normalizedHeader.contains($0) }) ? 5 : 0
         case .time:
-            return normalizedHeader.contains("date") || normalizedHeader.contains("timestamp") ? 5 : 0
+            return normalizedHeader.contains("date") || normalizedHeader.contains("timestamp") || normalizedHeader.contains("point") || normalizedHeader.contains("score") ? 5 : 0
         case .mass:
-            return normalizedHeader.contains("motor mass") || normalizedHeader.contains("propellant") ? 4 : 0
+            return normalizedHeader.contains("motor mass") || normalizedHeader.contains("propellant") || normalizedHeader.contains("point") || normalizedHeader.contains("score") ? 4 : 0
         case .parachute:
             return normalizedHeader.contains("reef") ? 5 : 0
         case .reefedCentimeters:
@@ -1194,7 +1321,7 @@ struct AccountView: View {
         if mass < rocket.dryMassGrams {
             warnings.append("loaded mass is below the rocket dry mass")
         }
-        if altitude < 100 || altitude > 2_500 {
+        if altitude < 100 || altitude > importedAltitudeUpperBound {
             warnings.append("altitude is outside the usual ARC practice range")
         }
         if let time, !(5...180).contains(time) {
@@ -1210,6 +1337,117 @@ struct AccountView: View {
             warnings.append("humidity is outside 0-100%")
         }
         return warnings
+    }
+
+    private struct ImportRowAudit {
+        var shouldImport: Bool
+        var noteText: String
+    }
+
+    private func importRowAudit(
+        rowNumber: Int,
+        rocketName: String,
+        rocketWasMapped: Bool,
+        mass: Double,
+        massWasMapped: Bool,
+        altitude: Double,
+        altitudeSourceText: String,
+        targetAltitude: Double?,
+        time: Double?,
+        dateWasMapped: Bool,
+        weatherWasMapped: Bool,
+        eggWasMapped: Bool,
+        importedPoints: String?,
+        notes: String
+    ) -> ImportRowAudit {
+        guard isReasonableImportedAltitude(altitude, targetAltitude: targetAltitude) else {
+            return ImportRowAudit(shouldImport: false, noteText: "")
+        }
+        guard (50...2_000).contains(mass) else {
+            return ImportRowAudit(shouldImport: false, noteText: "")
+        }
+        if let time, !(0...180).contains(time) {
+            return ImportRowAudit(shouldImport: false, noteText: "")
+        }
+        guard massWasMapped else {
+            return ImportRowAudit(shouldImport: false, noteText: "")
+        }
+
+        var confirmations = ["altitude"]
+        if massWasMapped { confirmations.append("mass") }
+        if rocketWasMapped || !rocketName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            confirmations.append("rocket")
+        }
+        if targetAltitude != nil { confirmations.append("target") }
+        if let time, (5...120).contains(time) { confirmations.append("time") }
+        if dateWasMapped { confirmations.append("date") }
+        if weatherWasMapped { confirmations.append("weather") }
+        if eggWasMapped { confirmations.append("egg") }
+
+        let lowercasedNotes = notes.lowercased()
+        let lowercasedAltitude = altitudeSourceText.lowercased()
+        let brokenAltitudeMarkers = [
+            "altimeter broke",
+            "altimeter broken",
+            "altimeter ??",
+            "no altitude",
+            "bad altitude",
+            "lost altitude",
+            "no data",
+            "n/a",
+            "broke",
+            "broken",
+            "invalid"
+        ]
+        if brokenAltitudeMarkers.contains(where: { lowercasedNotes.contains($0) || lowercasedAltitude.contains($0) }) {
+            return ImportRowAudit(shouldImport: false, noteText: "")
+        }
+        let uncertainAltitudeMarkers = ["??", "?", "smth", "something", "approx", "about", "around", "maybe"]
+        if uncertainAltitudeMarkers.contains(where: { lowercasedAltitude.contains($0) }) {
+            return ImportRowAudit(shouldImport: false, noteText: "")
+        }
+
+        guard confirmations.count >= 3 else {
+            return ImportRowAudit(shouldImport: false, noteText: "")
+        }
+
+        var reviewNotes = [
+            "Import checked row \(rowNumber): \(confirmations.count) confirmations (\(confirmations.joined(separator: ", ")))."
+        ]
+        if let pointsWarning = importedPointsCrossCheck(
+            importedPoints: importedPoints,
+            altitude: altitude,
+            targetAltitude: targetAltitude,
+            time: time
+        ) {
+            reviewNotes.append(pointsWarning)
+        }
+        return ImportRowAudit(shouldImport: true, noteText: reviewNotes.joined(separator: "\n"))
+    }
+
+    private func importedPointsCrossCheck(
+        importedPoints: String?,
+        altitude: Double,
+        targetAltitude: Double?,
+        time: Double?
+    ) -> String? {
+        guard let importedPoints,
+              let sheetPoints = firstSheetNumber(in: importedPoints.lowercased())
+        else { return nil }
+
+        let target = targetAltitude ?? store.targetAltitudeFeet
+        var expectedPoints = abs(altitude - target)
+        if let time {
+            let range = store.syncedCompetitionInfo.flightTimeRange
+            if time < range.lowerBound {
+                expectedPoints += (range.lowerBound - time) * 4
+            } else if time > range.upperBound {
+                expectedPoints += (time - range.upperBound) * 4
+            }
+        }
+
+        guard abs(expectedPoints - sheetPoints) > 40 else { return nil }
+        return "Import review: sheet points were \(Int(sheetPoints.rounded())), app recalculated about \(Int(expectedPoints.rounded())) using the mapped altitude/time."
     }
 
     private func value(in columns: [String], columnMap: [SheetColumnRole: Int], role: SheetColumnRole) -> String? {
@@ -1416,9 +1654,9 @@ struct AccountView: View {
         guard let number = sheetNumber(value, header: header, defaultUnit: defaultUnit) else { return nil }
         switch role {
         case .altitude, .targetAltitude:
-            return (20...5_000).contains(number) ? number : nil
+            return (20...1_600).contains(number) ? number : nil
         case .mass:
-            return (1...5_000).contains(number) ? number : nil
+            return (20...2_000).contains(number) ? number : nil
         case .time:
             return (0...300).contains(number) ? number : nil
         case .temperature:
@@ -1435,6 +1673,28 @@ struct AccountView: View {
         default:
             return number
         }
+    }
+
+    private func isReasonableImportedAltitude(_ altitude: Double, targetAltitude: Double?) -> Bool {
+        guard altitude.isFinite else { return false }
+        guard (50...importedAltitudeUpperBound).contains(altitude) else { return false }
+        if let targetAltitude, targetAltitude.isFinite, abs(altitude - targetAltitude) > 500 {
+            return false
+        }
+        return true
+    }
+
+    private var importedAltitudeUpperBound: Double {
+        let observedMax = store.flights
+            .map(\.measuredAltitudeFeet)
+            .filter { (100...1_600).contains($0) }
+            .max()
+        let reference = max(
+            observedMax ?? 0,
+            store.targetAltitudeFeet,
+            store.syncedCompetitionInfo.altitudeGoalFeet
+        )
+        return min(1_600, max(1_000, reference + 300))
     }
 
     private func inferredTargetAltitude(from values: [String]) -> Double? {
@@ -1458,7 +1718,9 @@ struct AccountView: View {
         guard combined.contains("reef") else { return nil }
         let patterns = [
             #"reef(?:ed|ing)?\s*(?:a\s*)?(?:bit\s*)?([0-9]+(?:\.[0-9]+)?)\s*(?:cm|centimeter|centimeters)"#,
-            #"([0-9]+(?:\.[0-9]+)?)\s*(?:cm|centimeter|centimeters)\s*(?:reef|reefed|reefing)"#
+            #"([0-9]+(?:\.[0-9]+)?)\s*(?:cm|centimeter|centimeters)\s*(?:reef|reefed|reefing)"#,
+            #"reef(?:ed|ing)?\s*(?:length\s*)?(?:is\s*)?([0-9]+(?:\.[0-9]+)?)\b"#,
+            #"([0-9]+(?:\.[0-9]+)?)\s*(?:cm\s*)?(?:reef|reefed|reefing)\b"#
         ]
         for pattern in patterns {
             if let match = combined.firstMatch(for: pattern),

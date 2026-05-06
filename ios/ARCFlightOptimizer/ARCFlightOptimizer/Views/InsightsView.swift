@@ -197,11 +197,8 @@ struct InsightsView: View {
     }
 
     private var nationalsVisibleXDomain: ClosedRange<Double> {
-        let heights = nationalsLoggedFlights.map { plannerHeight(for: $0) } + [nationalsTargetHeight]
-        guard !nationalsLoggedFlights.isEmpty else {
-            return nationalsDefaultAltitudeRange
-        }
-        return paddedDomain(heights, minimumPadding: 20)
+        let halfSpan = max(nationalsXSpan / 2, 1)
+        return (nationalsXCenter - halfSpan)...(nationalsXCenter + halfSpan)
     }
 
     private var nationalsTargetPadding: Double {
@@ -213,7 +210,9 @@ struct InsightsView: View {
     }
 
     private var nationalsVisibleYDomain: ClosedRange<Double> {
-        nationalsMassDomain
+        let center = nationalsYCenter ?? ((nationalsMassDomain.lowerBound + nationalsMassDomain.upperBound) / 2)
+        let halfSpan = max(nationalsEffectiveYSpan / 2, 1)
+        return (center - halfSpan)...(center + halfSpan)
     }
 
     private var nationalsLoggedFlights: [Flight] {
@@ -257,7 +256,6 @@ struct InsightsView: View {
             String(Int(baselineWeatherForPrediction.humidityPercent.rounded())),
             String(effectiveMotorIsReloadable),
             String(hobbyMaxAltitude),
-            String(isAdjustingNationalsSlider),
             flightSignature
         ].joined(separator: "::")
     }
@@ -294,27 +292,29 @@ struct InsightsView: View {
                     .allowsHitTesting(false)
             }
             .scrollDismissesKeyboard(.interactively)
-            .scrollDisabled(isAdjustingNationalsSlider)
             .scrollIndicators(.visible)
             .navigationTitle("Insights")
             .onAppear {
                 normalizeInsightsSelections()
                 predictedMass = store.activeRocket.map { $0.dryMassGrams + 90 } ?? predictedMass
-                nationalsTargetHeight = min(max(store.syncedCompetitionInfo.altitudeGoalFeet, nationalsDefaultAltitudeRange.lowerBound), nationalsDefaultAltitudeRange.upperBound)
+                syncNationalsTargetFromStore()
                 nationalsTargetText = String(Int(nationalsTargetHeight))
                 hobbyTargetHeight = store.targetAltitudeFeet
             }
             .onChange(of: store.flightMode) { _, _ in
                 normalizeInsightsSelections()
+                if store.isNationalsMode {
+                    syncNationalsTargetFromStore()
+                }
             }
             .onChange(of: store.rockets) { _, _ in
                 normalizeInsightsSelections()
             }
             .onChange(of: store.syncedCompetitionInfo) { _, info in
                 if store.flightMode == .nationals {
-                    nationalsTargetHeight = min(max(nationalsTargetHeight, nationalsDefaultAltitudeRange.lowerBound), nationalsDefaultAltitudeRange.upperBound)
+                    nationalsTargetHeight = clampedNationalsTarget(nationalsTargetHeight)
                     if abs(nationalsTargetHeight - info.altitudeGoalFeet) > 60 {
-                        nationalsTargetHeight = min(max(info.altitudeGoalFeet, nationalsDefaultAltitudeRange.lowerBound), nationalsDefaultAltitudeRange.upperBound)
+                        nationalsTargetHeight = clampedNationalsTarget(store.targetAltitudeFeet)
                         nationalsTargetText = String(Int(nationalsTargetHeight))
                     }
                 }
@@ -336,7 +336,7 @@ struct InsightsView: View {
         return VStack(alignment: .leading, spacing: 12) {
             Text("AI Calibration")
                 .font(.title3.bold())
-            Text("\(usableFlights.count) recent flights are feeding the fast field model.")
+            Text("\(usableFlights.count) flights in model.")
                 .foregroundStyle(.secondary)
             Gauge(value: readiness) {
                 Text("Model readiness")
@@ -346,10 +346,10 @@ struct InsightsView: View {
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(readiness >= 1 ? Color.arcMint : Color.arcAmber)
             if let meanError {
-                Text("Average back-test miss: about \(Int(meanError)) ft.")
+                Text("Back-test miss: about \(Int(meanError)) ft.")
                     .font(.footnote.weight(.semibold))
             } else {
-                Text("Log at least 4 flights with different masses or weather conditions to unlock stronger calibration.")
+                Text("Needs 4 varied flights for stronger calibration.")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(Color.arcAmber)
             }
@@ -389,7 +389,7 @@ struct InsightsView: View {
                 .tint(Color.arcMint)
             }
             if let optimization {
-                Text("Predicted apogee at that weight: \(Int(optimization.suggestedAltitudeFeet)) ft with \(Int(optimization.confidence * 100))% confidence.")
+                Text("Apogee: \(Int(optimization.suggestedAltitudeFeet)) ft • \(Int(optimization.confidence * 100))% confidence")
                     .foregroundStyle(.secondary)
             } else {
                 Text("\(Int(prediction.confidence * 100))% confidence using the \(prediction.displayMethod).")
@@ -426,16 +426,16 @@ struct InsightsView: View {
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(Color.arcAmber)
                     }
-                    Text("Suggested loaded mass: \(Int(optimization.suggestedMassGrams)) g (\(Int(optimization.massDeltaGrams)) g delta)")
-                    Text("Predicted altitude at that mass: \(Int(optimization.suggestedAltitudeFeet)) ft")
+                    Text("Mass: \(Int(optimization.suggestedMassGrams)) g (\(signedInt(optimization.massDeltaGrams)) g)")
+                    Text("Apogee: \(Int(optimization.suggestedAltitudeFeet)) ft")
                     if let drill = optimization.reusableDelayDrillSeconds {
-                        Text("Reusable delay adjustment: about \(String(format: "%.1f", drill)) seconds toward the time window")
+                        Text("Delay: \(String(format: "%.1f", drill)) s")
                     }
                     if let reefedCentimeters = optimization.suggestedReefedCentimeters {
-                        Text("Parachute reefing: about \(String(format: "%.1f", reefedCentimeters)) cm reefed for the time window")
+                        Text("Reefing: \(String(format: "%.1f", reefedCentimeters)) cm")
                     }
-                    ForEach(optimization.notes, id: \.self) { note in
-                        Text("• \(note)")
+                    ForEach(shortOptimizationNotes(optimization.notes), id: \.self) { note in
+                        Text(note)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -508,7 +508,7 @@ struct InsightsView: View {
         return VStack(alignment: .leading, spacing: 12) {
             Text("Smart Recommendations")
                 .font(.title3.bold())
-            Text("Recommendation confidence: \(confidenceLabel(recommendationConfidence)) based on today's weather, selected motor, similar logged flights, and video-analyzed data.")
+            Text("Confidence: \(confidenceLabel(recommendationConfidence))")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(confidenceColor(recommendationConfidence))
             if let reefingRecommendation {
@@ -522,7 +522,7 @@ struct InsightsView: View {
                 .background(priorityColor(reefingRecommendation.priority).opacity(0.14), in: RoundedRectangle(cornerRadius: 16))
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(priorityColor(reefingRecommendation.priority).opacity(0.5)))
             }
-            ForEach(cachedRecommendations) { recommendation in
+            ForEach(Array(cachedRecommendations.prefix(3))) { recommendation in
                 VStack(alignment: .leading, spacing: 6) {
                     Text(recommendation.title)
                         .font(.headline)
@@ -543,7 +543,7 @@ struct InsightsView: View {
                 .font(.title3.bold())
             Text(cachedDataSummary.headline)
                 .font(.headline)
-            ForEach(cachedDataSummary.insights, id: \.self) { insight in
+            ForEach(Array(cachedDataSummary.insights.prefix(4)), id: \.self) { insight in
                 HStack(alignment: .top, spacing: 8) {
                     Circle()
                         .fill(Color.arcMint)
@@ -568,15 +568,34 @@ struct InsightsView: View {
         return VStack(alignment: .leading, spacing: 10) {
             Label("Today's Calculation Snapshot", systemImage: "sun.max.fill")
                 .font(.title3.bold())
-            Text("Target: \(Int(targetAltitudeForAI)) ft")
-            Text("Motor: \(predictedMotorDesignation)")
-            Text("Weather: \(Int(weather.temperatureF.rounded())) F, \(Int(weather.windMPH.rounded())) mph wind, \(Int(weather.humidityPercent.rounded()))% humidity")
-            Text("Loaded mass baseline: \(Int(baselineMassForPrediction.rounded())) g")
-            Text("Similar flights, same motor, recent logs, weather matches, and analyzed videos are weighted most heavily.")
+            Text("Target \(Int(targetAltitudeForAI)) ft • \(predictedMotorDesignation)")
+            Text("\(Int(weather.temperatureF.rounded())) F • \(Int(weather.windMPH.rounded())) mph wind • \(Int(weather.humidityPercent.rounded()))% humidity")
+            Text("Baseline \(Int(baselineMassForPrediction.rounded())) g")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
         .cardStyle()
+    }
+
+    private func shortOptimizationNotes(_ notes: [String]) -> [String] {
+        var output: [String] = []
+        for note in notes {
+            let lowercased = note.lowercased()
+            if lowercased.contains("optimization uses") ||
+                lowercased.contains("flights with the same wanted altitude") ||
+                lowercased.contains("mass recommendations prefer") ||
+                lowercased.contains("suggested mass is relative") ||
+                lowercased.contains("delay drill guidance") {
+                continue
+            }
+            output.append(note)
+        }
+        return Array(output.prefix(3))
+    }
+
+    private func signedInt(_ value: Double) -> String {
+        let rounded = Int(value.rounded())
+        return rounded >= 0 ? "+\(rounded)" : "\(rounded)"
     }
 
     private func confidenceLabel(_ confidence: Double) -> String {
@@ -629,6 +648,9 @@ struct InsightsView: View {
                         }
                         keepNationalsTargetVisible()
                         selectedNationalsGraphTarget = nil
+                        if !isAdjustingNationalsSlider {
+                            store.updateTargetAltitude(newValue)
+                        }
                     }
                 HStack {
                     Text("\(Int(nationalsDefaultAltitudeRange.lowerBound)) ft")
@@ -643,45 +665,50 @@ struct InsightsView: View {
             }
 
             if !nationalsLoggedFlights.isEmpty {
-                Chart {
-                    ForEach(nationalsLoggedFlights) { flight in
-                        let height = plannerHeight(for: flight)
-                        PointMark(
-                            x: .value("Height", height),
-                            y: .value("Logged Mass", flight.rocketMassGrams)
-                        )
-                        .foregroundStyle(Color.arcAmber)
-                        .symbolSize(70)
-                        if selectedNationalsFlight?.id == flight.id {
+                GeometryReader { chartGeometry in
+                    Chart {
+                        ForEach(nationalsLoggedFlights) { flight in
+                            let height = plannerHeight(for: flight)
                             PointMark(
-                                x: .value("Selected Height", height),
-                                y: .value("Selected Mass", flight.rocketMassGrams)
+                                x: .value("Height", height),
+                                y: .value("Logged Mass", flight.rocketMassGrams)
                             )
-                            .foregroundStyle(Color.arcOrange)
-                            .symbolSize(130)
+                            .foregroundStyle(Color.arcAmber)
+                            .symbolSize(70)
+                            if selectedNationalsFlight?.id == flight.id {
+                                PointMark(
+                                    x: .value("Selected Height", height),
+                                    y: .value("Selected Mass", flight.rocketMassGrams)
+                                )
+                                .foregroundStyle(Color.arcOrange)
+                                .symbolSize(130)
+                            }
+                        }
+
+                        ForEach(nationalsBestFitPoints) { fit in
+                            LineMark(
+                                x: .value("Height", fit.x),
+                                y: .value("Best Fit Mass", fit.y)
+                            )
+                            .foregroundStyle(Color.arcMint)
+                            .lineStyle(StrokeStyle(lineWidth: 3))
                         }
                     }
-
-                    ForEach(nationalsBestFitPoints) { fit in
-                        LineMark(
-                            x: .value("Height", fit.x),
-                            y: .value("Best Fit Mass", fit.y)
-                        )
-                        .foregroundStyle(Color.arcMint)
-                        .lineStyle(StrokeStyle(lineWidth: 3))
+                    .chartXAxisLabel("Height (ft)")
+                    .chartYAxisLabel("Weight (g)")
+                    .chartXScale(domain: nationalsVisibleXDomain)
+                    .chartYScale(domain: nationalsVisibleYDomain)
+                    .chartPlotStyle { plotArea in
+                        plotArea.clipped()
                     }
+                    .chartOverlay { chartProxy in
+                        nationalsTargetOverlay(chartProxy: chartProxy)
+                    }
+                    .contentShape(Rectangle())
+                    .gesture(nationalsPanGesture(size: chartGeometry.size))
+                    .simultaneousGesture(nationalsZoomGesture)
+                    .clipped()
                 }
-                .chartXAxisLabel("Height (ft)")
-                .chartYAxisLabel("Weight (g)")
-                .chartXScale(domain: nationalsVisibleXDomain)
-                .chartYScale(domain: nationalsVisibleYDomain)
-                .chartPlotStyle { plotArea in
-                    plotArea.clipped()
-                }
-                .chartOverlay { chartProxy in
-                    nationalsTargetOverlay(chartProxy: chartProxy)
-                }
-                .clipped()
                 .frame(height: 270)
                 Text("Dots are your flight logs. X is wanted height when available, otherwise measured height. Y is logged weight. The mint line is the best-fit trend.")
                     .font(.caption)
@@ -728,10 +755,12 @@ struct InsightsView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
-            .gesture(
+            .highPriorityGesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
                     .onChanged { value in
-                        isAdjustingNationalsSlider = true
+                        if !isAdjustingNationalsSlider {
+                            isAdjustingNationalsSlider = true
+                        }
                         updateNationalsSlider(from: value.location.x, width: width)
                     }
                     .onEnded { value in
@@ -811,7 +840,7 @@ struct InsightsView: View {
         let range = nationalsDefaultAltitudeRange
         let rawValue = range.lowerBound + progress * (range.upperBound - range.lowerBound)
         let steppedValue = rawValue.rounded()
-        nationalsTargetHeight = clamp(steppedValue, min: range.lowerBound, max: range.upperBound)
+        nationalsTargetHeight = clampedNationalsTarget(steppedValue)
     }
 
     private func finishNationalsSliderAdjustment() {
@@ -915,6 +944,16 @@ struct InsightsView: View {
             nationalsTargetHeight = value
             keepNationalsTargetVisible()
         }
+    }
+
+    private func syncNationalsTargetFromStore() {
+        nationalsTargetHeight = clampedNationalsTarget(store.targetAltitudeFeet)
+        nationalsTargetText = String(Int(nationalsTargetHeight.rounded()))
+        keepNationalsTargetVisible()
+    }
+
+    private func clampedNationalsTarget(_ value: Double) -> Double {
+        clamp(value, min: nationalsDefaultAltitudeRange.lowerBound, max: nationalsDefaultAltitudeRange.upperBound)
     }
 
     @ViewBuilder
@@ -1073,61 +1112,61 @@ struct InsightsView: View {
 
         let trendText: String
         if usable.count >= 3, let slope, slope.isFinite, abs(slope) >= 0.05 {
-            let direction = slope < 0 ? "more weight has usually lowered altitude" : "more weight has usually raised altitude"
-            trendText = "Weight trend: \(direction) by about \(String(format: "%.1f", abs(slope))) ft per gram in the current filtered data."
+            let direction = slope < 0 ? "lower" : "raise"
+            trendText = "Weight: \(String(format: "%.1f", abs(slope))) ft/g, heavier tends to \(direction) altitude."
         } else {
-            trendText = "Weight trend: not enough varied mass data yet to trust a precise ft-per-gram slope."
+            trendText = "Weight: needs more varied masses."
         }
 
         let weatherText: String
         if usable.count >= 4, let windSlope, windSlope.isFinite, abs(windSlope) >= 1.0 {
             let direction = windSlope < 0 ? "lower" : "higher"
-            weatherText = "Weather signal: higher wind has correlated with \(direction) altitude by about \(Int(abs(windSlope).rounded())) ft per mph."
+            weatherText = "Wind: \(direction) altitude by ~\(Int(abs(windSlope).rounded())) ft/mph."
         } else {
-            weatherText = "Weather signal: keep logging live weather; the current wind/altitude relationship is still weak."
+            weatherText = "Wind: keep logging weather."
         }
 
         var insights: [String] = [
-            "\(usable.count) flights are feeding the model. Average altitude is \(Int(averageAltitude.rounded())) ft, best altitude is \(Int(bestAltitude.rounded())) ft, and average loaded mass is \(Int(averageMass.rounded())) g.",
-            "Target accuracy: average miss is \(Int(averageTargetMiss.rounded())) ft, with the best logged miss at \(Int(bestTargetMiss.rounded())) ft.",
+            "\(usable.count) flights • avg \(Int(averageAltitude.rounded())) ft • best \(Int(bestAltitude.rounded())) ft • avg mass \(Int(averageMass.rounded())) g.",
+            "Target miss: avg \(Int(averageTargetMiss.rounded())) ft • best \(Int(bestTargetMiss.rounded())) ft.",
             trendText,
             weatherText
         ]
 
         if let optimization {
             let massDirection = optimization.massDeltaGrams < 0 ? "remove" : "add"
-            insights.append("Current tuner output: \(massDirection) about \(Int(abs(optimization.massDeltaGrams).rounded())) g to aim near \(Int(targetAltitude.rounded())) ft; predicted apogee is \(Int(optimization.suggestedAltitudeFeet.rounded())) ft.")
+            insights.append("Tuner: \(massDirection) \(Int(abs(optimization.massDeltaGrams).rounded())) g -> \(Int(optimization.suggestedAltitudeFeet.rounded())) ft.")
         } else {
-            insights.append("Current tuner output: add a rocket and selected motor so the app can summarize the exact weight recommendation.")
+            insights.append("Tuner: select a rocket and motor for a weight target.")
         }
 
         if let targetFlightTimeRange {
             if timedFlights.isEmpty {
-                insights.append("Timing: no flight-time logs yet, so delay drilling and reefing advice is still low confidence.")
+                insights.append("Timing: add flight-time logs.")
             } else {
                 let averageTime = average(timedFlights.compactMap(\.flightTimeSeconds))
                 let timeStatus = targetFlightTimeRange.contains(averageTime) ? "inside" : "outside"
-                insights.append("Timing: \(timedFlights.count) timed flights average \(String(format: "%.1f", averageTime)) s, \(timeStatus) the \(Int(targetFlightTimeRange.lowerBound))-\(Int(targetFlightTimeRange.upperBound)) s window.")
+                insights.append("Timing: \(String(format: "%.1f", averageTime)) s avg, \(timeStatus) window.")
             }
 
             if !reefedFlights.isEmpty {
                 let averageReef = average(reefedFlights.compactMap(\.parachuteReefedCentimeters))
-                insights.append("Recovery data: \(reefedFlights.count) logs include reefing, averaging \(String(format: "%.1f", averageReef)) cm reefed.")
+                insights.append("Reefing: \(reefedFlights.count) logs, \(String(format: "%.1f", averageReef)) cm avg.")
             }
         }
 
         if let bestGroup {
-            insights.append("Best repeated target group: flights aimed near \(bestGroup.target) ft average \(Int(bestGroup.miss.rounded())) ft off across \(bestGroup.count) logs.")
+            insights.append("Best repeat target: \(bestGroup.target) ft, \(Int(bestGroup.miss.rounded())) ft avg miss.")
         }
 
         if videoAnalyzedFlights.isEmpty {
-            insights.append("Video coverage: no analyzed videos are attached to these logs yet.")
+            insights.append("Video: none analyzed yet.")
         } else {
-            insights.append("Video coverage: \(videoAnalyzedFlights.count) flights include analyzed video signals that can explain boost, coast, deployment, or descent issues.")
+            insights.append("Video: \(videoAnalyzedFlights.count) analyzed.")
         }
 
         if !importedFlights.isEmpty {
-            insights.append("Imported sheet data: \(importedFlights.count) logs appear to come from flight-sheet imports and are included in the same calculations.")
+            insights.append("Imports: \(importedFlights.count) logs included.")
         }
 
         let nextStep: String
@@ -1145,7 +1184,7 @@ struct InsightsView: View {
 
         return AIDataSummary(
             headline: "Your logbook is strongest around \(Int(averageMass.rounded())) g and \(Int(averageAltitude.rounded())) ft.",
-            insights: Array(insights.prefix(8)),
+            insights: Array(insights.prefix(5)),
             nextStep: nextStep
         )
     }

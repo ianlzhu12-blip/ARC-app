@@ -27,6 +27,7 @@
 		10B000000000000000000118 /* Services/VideoFlightAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000118 /* Services/VideoFlightAnalyzer.swift */; };
 		10B000000000000000000119 /* Services/LaunchTimerLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000119 /* Services/LaunchTimerLiveActivity.swift */; };
 		10B000000000000000000120 /* Models/LaunchTimerActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000120 /* Models/LaunchTimerActivityAttributes.swift */; };
+		10B000000000000000000121 /* Services/FlightNoteCleaner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000121 /* Services/FlightNoteCleaner.swift */; };
 		10B000000000000000000201 /* LaunchTimerLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000201 /* LaunchTimerLiveActivityWidget.swift */; };
 		10B000000000000000000202 /* Models/LaunchTimerActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000120 /* Models/LaunchTimerActivityAttributes.swift */; };
 		10B000000000000000000203 /* ARCFlightOptimizerLiveActivity.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000202 /* ARCFlightOptimizerLiveActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -78,6 +79,7 @@
 		10A000000000000000000118 /* Services/VideoFlightAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/VideoFlightAnalyzer.swift; sourceTree = "<group>"; };
 		10A000000000000000000119 /* Services/LaunchTimerLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/LaunchTimerLiveActivity.swift; sourceTree = "<group>"; };
 		10A000000000000000000120 /* Models/LaunchTimerActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/LaunchTimerActivityAttributes.swift; sourceTree = "<group>"; };
+		10A000000000000000000121 /* Services/FlightNoteCleaner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/FlightNoteCleaner.swift; sourceTree = "<group>"; };
 		10A000000000000000000201 /* LaunchTimerLiveActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchTimerLiveActivityWidget.swift; sourceTree = "<group>"; };
 		10A000000000000000000202 /* ARCFlightOptimizerLiveActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ARCFlightOptimizerLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -125,6 +127,7 @@
 				10A000000000000000000117 /* Services/OpenRocketImporter.swift */,
 				10A000000000000000000118 /* Services/VideoFlightAnalyzer.swift */,
 				10A000000000000000000119 /* Services/LaunchTimerLiveActivity.swift */,
+				10A000000000000000000121 /* Services/FlightNoteCleaner.swift */,
 				10A000000000000000000106 /* Views/ContentView.swift */,
 				10A000000000000000000107 /* Views/DashboardView.swift */,
 				10A000000000000000000108 /* Views/QuickLogView.swift */,
@@ -264,6 +267,7 @@
 				10B000000000000000000117 /* Services/OpenRocketImporter.swift in Sources */,
 				10B000000000000000000118 /* Services/VideoFlightAnalyzer.swift in Sources */,
 				10B000000000000000000119 /* Services/LaunchTimerLiveActivity.swift in Sources */,
+				10B000000000000000000121 /* Services/FlightNoteCleaner.swift in Sources */,
 				10B000000000000000000106 /* Views/ContentView.swift in Sources */,
 				10B000000000000000000107 /* Views/DashboardView.swift in Sources */,
 				10B000000000000000000108 /* Views/QuickLogView.swift in Sources */,

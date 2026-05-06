@@ -7,6 +7,7 @@ enum PredictionEngine {
             input: input
         )
         let priorAltitude = physicsPriorAltitude(for: input)
+        let localEstimate = localAltitudeEstimate(flights: usableFlights, input: input)
 
         guard usableFlights.count >= 4 else {
             let average = usableFlights.isEmpty
@@ -15,9 +16,19 @@ enum PredictionEngine {
             let blended = usableFlights.isEmpty
                 ? priorAltitude
                 : priorAltitude * 0.55 + average * 0.45
+            let altitude: Double
+            let confidence: Double
+            if let localEstimate {
+                let localTrust = min(0.82, max(0.45, localEstimate.confidence))
+                altitude = sanitizedAltitude(localEstimate.altitudeFeet * localTrust + blended * (1 - localTrust))
+                confidence = max(min(0.62, localEstimate.confidence), min(0.45, Double(usableFlights.count) * 0.12))
+            } else {
+                altitude = sanitizedAltitude(blended)
+                confidence = min(0.45, Double(usableFlights.count) * 0.12)
+            }
             return Prediction(
-                altitudeFeet: sanitizedAltitude(blended).rounded(),
-                confidence: min(0.45, Double(usableFlights.count) * 0.12),
+                altitudeFeet: altitude.rounded(),
+                confidence: confidence,
                 method: "baseline"
             )
         }
@@ -64,7 +75,14 @@ enum PredictionEngine {
         )
         let calibratedAltitude = regressionAltitude + neighborCorrection
         let trust = modelTrust(flightCount: usableFlights.count, input: input, flights: usableFlights)
-        let altitude = sanitizedAltitude(calibratedAltitude * trust + priorAltitude * (1 - trust))
+        let modelAltitude = sanitizedAltitude(calibratedAltitude * trust + priorAltitude * (1 - trust))
+        let altitude: Double
+        if let localEstimate {
+            let localTrust = min(0.84, max(0.22, localEstimate.confidence))
+            altitude = sanitizedAltitude(localEstimate.altitudeFeet * localTrust + modelAltitude * (1 - localTrust))
+        } else {
+            altitude = modelAltitude
+        }
         let meanError = weightedMeanAbsoluteError(
             features: features,
             targets: targets,
@@ -72,11 +90,12 @@ enum PredictionEngine {
             sampleWeights: sampleWeights
         )
         let neighborBonus = abs(neighborCorrection) > 0 ? 0.04 : 0
+        let localBonus = localEstimate.map { min(0.09, $0.confidence * 0.08) } ?? 0
         let confidence = confidenceScore(
             flightCount: usableFlights.count,
             meanError: meanError,
             trust: trust,
-            neighborBonus: neighborBonus
+            neighborBonus: neighborBonus + localBonus
         )
 
         return Prediction(
@@ -97,60 +116,64 @@ enum PredictionEngine {
         let current = predict(flights: usableFlights, input: input)
         let delta = targetAltitude - current.altitudeFeet
 
+        var output: [Recommendation] = []
         if abs(delta) <= 8 {
-            return [
+            output.append(
                 Recommendation(
                     title: "Hold this setup",
                     detail: "The current model predicts \(Int(current.altitudeFeet)) ft, within \(Int(abs(delta))) ft of the \(Int(targetAltitude)) ft target. Keep the mass, motor, and recovery setup steady and log another repeat flight.",
                     priority: .low
                 )
-            ]
-        }
-
-        let slope = empiricalSlope(
-            flights: usableFlights.filter { $0.motorDesignation == input.motorDesignation },
-            x: \.rocketMassGrams,
-            y: \.measuredAltitudeFeet
-        ) ?? empiricalSlope(flights: usableFlights, x: \.rocketMassGrams, y: \.measuredAltitudeFeet)
-
-        var output: [Recommendation] = []
-        if let slope, abs(slope) > 0.08, abs(slope) < 8 {
-            let rawMassChange = delta / slope
-            let massChange = min(max(rawMassChange, -180), 180)
-            let newMass = input.rocketMassGrams + massChange
-            output.append(
-                Recommendation(
-                    title: massChange < 0 ? "Remove data-backed trim mass" : "Add data-backed trim mass",
-                    detail: "Your logs show about \(String(format: "%.1f", abs(slope))) ft per gram for this setup. Aim near \(Int(newMass)) g loaded mass, a \(Int(massChange.rounded())) g change toward \(Int(targetAltitude)) ft.",
-                    priority: abs(delta) > 35 ? .high : .medium
-                )
             )
         } else {
-            let tunedMass = bestMassFromModel(flights: usableFlights, input: input, targetAltitude: targetAltitude)
-            let massDelta = tunedMass - input.rocketMassGrams
-            output.append(
-                Recommendation(
-                    title: massDelta < 0 ? "Test a lighter data point" : "Test a heavier data point",
-                    detail: "The logbook does not yet show a reliable mass-to-altitude slope. The stabilized model suggests testing around \(Int(tunedMass)) g, a \(Int(massDelta.rounded())) g change, then logging repeat flights to lock in the real slope.",
-                    priority: .medium
-                )
-            )
-        }
+            let slope = empiricalSlope(
+                flights: usableFlights.filter { $0.motorDesignation == input.motorDesignation },
+                x: \.rocketMassGrams,
+                y: \.measuredAltitudeFeet
+            ) ?? empiricalSlope(flights: usableFlights, x: \.rocketMassGrams, y: \.measuredAltitudeFeet)
 
-        if let motorRecommendation = motorRecommendation(flights: usableFlights, input: input, targetAltitude: targetAltitude) {
-            output.append(motorRecommendation)
-        } else if let nearby = nearbyMotor(for: input.motorDesignation, shouldIncrease: delta > 80), abs(delta) > 80 {
-            output.append(
-                Recommendation(
-                    title: "Test \(nearby.designation) next",
-                    detail: "Your logs do not yet have enough motor comparison data. Based on the current altitude miss, \(nearby.designation) is the next motor worth testing and logging.",
-                    priority: .medium
+            if let slope, abs(slope) > 0.08, abs(slope) < 8 {
+                let rawMassChange = delta / slope
+                let massChange = min(max(rawMassChange, -180), 180)
+                let newMass = input.rocketMassGrams + massChange
+                output.append(
+                    Recommendation(
+                        title: massChange < 0 ? "Remove data-backed trim mass" : "Add data-backed trim mass",
+                        detail: "Your logs show about \(String(format: "%.1f", abs(slope))) ft per gram for this setup. Aim near \(Int(newMass)) g loaded mass, a \(Int(massChange.rounded())) g change toward \(Int(targetAltitude)) ft.",
+                        priority: abs(delta) > 35 ? .high : .medium
+                    )
                 )
-            )
+            } else {
+                let tunedMass = bestMassFromModel(flights: usableFlights, input: input, targetAltitude: targetAltitude)
+                let massDelta = tunedMass - input.rocketMassGrams
+                output.append(
+                    Recommendation(
+                        title: massDelta < 0 ? "Test a lighter data point" : "Test a heavier data point",
+                        detail: "The logbook does not yet show a reliable mass-to-altitude slope. The stabilized model suggests testing around \(Int(tunedMass)) g, a \(Int(massDelta.rounded())) g change, then logging repeat flights to lock in the real slope.",
+                        priority: .medium
+                    )
+                )
+            }
+
+            if let motorRecommendation = motorRecommendation(flights: usableFlights, input: input, targetAltitude: targetAltitude) {
+                output.append(motorRecommendation)
+            } else if let nearby = nearbyMotor(for: input.motorDesignation, shouldIncrease: delta > 80), abs(delta) > 80 {
+                output.append(
+                    Recommendation(
+                        title: "Test \(nearby.designation) next",
+                        detail: "Your logs do not yet have enough motor comparison data. Based on the current altitude miss, \(nearby.designation) is the next motor worth testing and logging.",
+                        priority: .medium
+                    )
+                )
+            }
         }
 
         if let targetFlightTimeRange {
-            if let timing = timingRecommendation(flights: usableFlights, targetRange: targetFlightTimeRange) {
+            if let timing = timingRecommendation(
+                flights: usableFlights,
+                targetRange: targetFlightTimeRange,
+                currentWindMPH: input.windMPH
+            ) {
                 output.append(timing)
             } else {
                 output.append(
@@ -187,7 +210,7 @@ enum PredictionEngine {
     ) -> OptimizationResult {
         let targetGroupedFlights = targetGroupedFlights(from: flights, targetAltitude: targetAltitudeFeet)
         let exactTargetGroup = wantedAltitudeGroup(from: flights, targetAltitude: targetAltitudeFeet)
-        let currentMass = rocket.dryMassGrams + 90
+        let currentMass = baselineReadyMass(for: rocket, selectedMotor: selectedMotor, flights: flights)
         let baseInput = PredictionInput(
             motorType: selectedMotor.motorClass,
             motorDesignation: selectedMotor.designation,
@@ -204,6 +227,11 @@ enum PredictionEngine {
         var bestMass = currentMass
         var bestPrediction = predict(flights: targetGroupedFlights, input: baseInput)
         var bestError = abs(bestPrediction.altitudeFeet - targetAltitudeFeet)
+        var bestScore = bestError + massEvidencePenalty(
+            massGrams: bestMass,
+            flights: targetGroupedFlights,
+            selectedMotor: selectedMotor
+        )
 
         let coarseSearch = bestMassSearchRange(for: rocket, currentMass: currentMass)
         for step in stride(from: coarseSearch.lowerBound, through: coarseSearch.upperBound, by: 25) {
@@ -221,10 +249,16 @@ enum PredictionEngine {
             )
             let prediction = predict(flights: targetGroupedFlights, input: candidate)
             let error = abs(prediction.altitudeFeet - targetAltitudeFeet)
-            if error < bestError {
+            let score = error + massEvidencePenalty(
+                massGrams: step,
+                flights: targetGroupedFlights,
+                selectedMotor: selectedMotor
+            )
+            if score < bestScore {
                 bestMass = step
                 bestPrediction = prediction
                 bestError = error
+                bestScore = score
             }
         }
 
@@ -233,11 +267,53 @@ enum PredictionEngine {
             candidate.rocketMassGrams = step
             let prediction = predict(flights: targetGroupedFlights, input: candidate)
             let error = abs(prediction.altitudeFeet - targetAltitudeFeet)
-            if error < bestError {
+            let score = error + massEvidencePenalty(
+                massGrams: step,
+                flights: targetGroupedFlights,
+                selectedMotor: selectedMotor
+            )
+            if score < bestScore {
                 bestMass = step
                 bestPrediction = prediction
                 bestError = error
+                bestScore = score
             }
+        }
+
+        for step in stride(from: max(coarseSearch.lowerBound, bestMass - 8), through: min(coarseSearch.upperBound, bestMass + 8), by: 1) {
+            var candidate = baseInput
+            candidate.rocketMassGrams = step
+            let prediction = predict(flights: targetGroupedFlights, input: candidate)
+            let error = abs(prediction.altitudeFeet - targetAltitudeFeet)
+            let score = error + massEvidencePenalty(
+                massGrams: step,
+                flights: targetGroupedFlights,
+                selectedMotor: selectedMotor
+            )
+            if score < bestScore {
+                bestMass = step
+                bestPrediction = prediction
+                bestError = error
+                bestScore = score
+            }
+        }
+
+        let empiricalAnchor = empiricalMassAnchor(
+            flights: flights,
+            rocket: rocket,
+            selectedMotor: selectedMotor,
+            weather: weather,
+            targetAltitudeFeet: targetAltitudeFeet
+        )
+        if let empiricalAnchor,
+           empiricalAnchor.nearestMissFeet <= max(12, bestError + 18) {
+            bestMass = empiricalAnchor.massGrams
+            bestPrediction = Prediction(
+                altitudeFeet: empiricalAnchor.observedAltitudeFeet.rounded(),
+                confidence: max(bestPrediction.confidence, empiricalAnchor.confidence),
+                method: "regression"
+            )
+            bestError = abs(empiricalAnchor.observedAltitudeFeet - targetAltitudeFeet)
         }
 
         let estimatedFlightTime = estimatedFlightTimeSeconds(rocket: rocket, massGrams: bestMass, weather: weather)
@@ -245,7 +321,8 @@ enum PredictionEngine {
         let reefSuggestion = recommendedReefedCentimeters(
             flights: targetGroupedFlights,
             targetRange: targetFlightTimeRange,
-            estimatedFlightTime: estimatedFlightTime
+            estimatedFlightTime: estimatedFlightTime,
+            currentWindMPH: weather.windMPH
         )
         let drillSuggestion: Double?
         if reloadable, let targetFlightTimeRange {
@@ -260,10 +337,15 @@ enum PredictionEngine {
         var notes = [
             "Optimization uses past flights, selected motor impulse, airframe dimensions, parachute size, material, and current weather.",
             "Flights with the same wanted altitude are grouped and weighted more heavily before calculating mass and reefing.",
+            "Mass recommendations prefer weights close to real logged flights unless a farther mass clearly predicts better.",
             "Suggested mass is relative to an estimated ready-to-fly baseline of about \(Int(currentMass)) g."
         ]
         if exactTargetGroup.count >= 2 {
             notes.append("Using \(exactTargetGroup.count) logged flight\(exactTargetGroup.count == 1 ? "" : "s") from the \(Int(targetAltitudeFeet.rounded())) ft wanted-altitude group as the strongest calibration set.")
+        }
+        if let empiricalAnchor,
+           abs(empiricalAnchor.massGrams - bestMass) <= 0.1 {
+            notes.append("Closest real flight data found \(Int(empiricalAnchor.observedAltitudeFeet.rounded())) ft at \(Int(empiricalAnchor.massGrams.rounded())) g, so the optimizer favored that proven setup over the generic baseline.")
         }
         if rocket.importedFromOpenRocket {
             notes.insert(
@@ -275,7 +357,7 @@ enum PredictionEngine {
             notes.append("Estimated flight time is about \(String(format: "%.1f", estimatedFlightTime)) s for a target window of \(Int(targetFlightTimeRange.lowerBound))-\(Int(targetFlightTimeRange.upperBound)) s.")
         }
         if let reefSuggestion {
-            notes.append("Based on logged flight-time vs. reefing data, try about \(String(format: "%.1f", reefSuggestion)) cm of parachute reefing for the time window.")
+            notes.append("Based on logged flight-time, wind speed, and reefing data, try about \(String(format: "%.1f", reefSuggestion)) cm of parachute reefing for the time window.")
         }
         if reloadable {
             notes.append("Delay drill guidance is approximate and should be checked against the manufacturer delay chart and safe test flights.")
@@ -299,7 +381,7 @@ enum PredictionEngine {
         weather: Weather,
         isReloadableMotor: Bool? = nil
     ) -> OptimizationResult {
-        let currentMass = rocket.dryMassGrams + 90
+        let currentMass = baselineReadyMass(for: rocket, selectedMotor: selectedMotor, flights: flights)
         let baseInput = PredictionInput(
             motorType: selectedMotor.motorClass,
             motorDesignation: selectedMotor.designation,
@@ -472,7 +554,7 @@ enum PredictionEngine {
         let medianDeviation = max(median(deviations), 35)
         let physicsPrior = physicsPriorAltitude(for: input)
 
-        return finiteFlights.filter { flight in
+        let rangeCheckedFlights = finiteFlights.filter { flight in
             let robustZ = abs(flight.measuredAltitudeFeet - medianAltitude) / medianDeviation
             let priorMiss = abs(flight.measuredAltitudeFeet - physicsPrior)
             if robustZ > 4.8 && priorMiss > 450 {
@@ -483,6 +565,58 @@ enum PredictionEngine {
             }
             return true
         }
+
+        return patternConsistentFlights(rangeCheckedFlights)
+    }
+
+    private static func patternConsistentFlights(_ flights: [Flight]) -> [Flight] {
+        guard flights.count >= 7 else { return flights }
+
+        var uniqueFlights: [UUID: Flight] = [:]
+        for flight in flights where uniqueFlights[flight.id] == nil {
+            uniqueFlights[flight.id] = flight
+        }
+        let uniqueValues = Array(uniqueFlights.values)
+        guard uniqueValues.count >= 7 else { return flights }
+
+        let acceptedIDs = Set(uniqueValues.compactMap { flight -> UUID? in
+            if isSameMassOutlier(flight, in: uniqueValues) {
+                return nil
+            }
+            if isSameAltitudeOutlier(flight, in: uniqueValues) {
+                return nil
+            }
+            return flight.id
+        })
+
+        guard acceptedIDs.count >= max(5, uniqueValues.count / 2) else { return flights }
+        return flights.filter { acceptedIDs.contains($0.id) }
+    }
+
+    private static func isSameMassOutlier(_ flight: Flight, in flights: [Flight]) -> Bool {
+        let neighbors = flights.filter {
+            $0.id != flight.id &&
+            $0.motorDesignation == flight.motorDesignation &&
+            abs($0.rocketMassGrams - flight.rocketMassGrams) <= 3
+        }
+        guard neighbors.count >= 2 else { return false }
+
+        let expectedAltitude = median(neighbors.map(\.measuredAltitudeFeet))
+        let allowedMiss = max(90, expectedAltitude * 0.12)
+        return abs(flight.measuredAltitudeFeet - expectedAltitude) > allowedMiss
+    }
+
+    private static func isSameAltitudeOutlier(_ flight: Flight, in flights: [Flight]) -> Bool {
+        let neighbors = flights.filter {
+            $0.id != flight.id &&
+            $0.motorDesignation == flight.motorDesignation &&
+            abs($0.measuredAltitudeFeet - flight.measuredAltitudeFeet) <= 15
+        }
+        guard neighbors.count >= 2 else { return false }
+
+        let expectedMass = median(neighbors.map(\.rocketMassGrams))
+        let allowedMiss = max(80, expectedMass * 0.14)
+        return abs(flight.rocketMassGrams - expectedMass) > allowedMiss
     }
 
     private static func similarityWeight(for flight: Flight, input: PredictionInput) -> Double {
@@ -547,6 +681,92 @@ enum PredictionEngine {
         }
         guard totalWeight > 0 else { return 0 }
         return min(max(weightedResidual / totalWeight, -140), 140)
+    }
+
+    private struct LocalAltitudeEstimate {
+        var altitudeFeet: Double
+        var confidence: Double
+        var sampleCount: Int
+        var nearestDistance: Double
+    }
+
+    private static func localAltitudeEstimate(flights: [Flight], input: PredictionInput) -> LocalAltitudeEstimate? {
+        var uniqueFlights: [UUID: Flight] = [:]
+        for flight in flights where uniqueFlights[flight.id] == nil {
+            uniqueFlights[flight.id] = flight
+        }
+
+        let scored = uniqueFlights.values.compactMap { flight -> (flight: Flight, distance: Double, weight: Double)? in
+            guard
+                flight.measuredAltitudeFeet.isFinite,
+                flight.rocketMassGrams.isFinite,
+                !flight.excludedFromAI
+            else {
+                return nil
+            }
+
+            let motorPenalty: Double
+            if flight.motorDesignation == input.motorDesignation {
+                motorPenalty = 0
+            } else if flight.motorType == input.motorType {
+                motorPenalty = 0.9
+            } else {
+                motorPenalty = 2.4
+            }
+
+            let massTerm = abs(flight.rocketMassGrams - input.rocketMassGrams) / 32
+            let windTerm = abs(flight.weather.windMPH - input.windMPH) / 6
+            let temperatureTerm = abs(flight.weather.temperatureF - input.temperatureF) / 20
+            let humidityTerm = abs(flight.weather.humidityPercent - input.humidityPercent) / 42
+            let parachuteTerm = abs(flight.parachuteSizeInches - input.parachuteSizeInches) / 8
+            let distance = sqrt(
+                massTerm * massTerm +
+                windTerm * windTerm +
+                temperatureTerm * temperatureTerm +
+                humidityTerm * humidityTerm +
+                parachuteTerm * parachuteTerm +
+                motorPenalty * motorPenalty
+            )
+            guard distance <= 4.2 else { return nil }
+
+            var reliability = 1.0
+            if flight.motorDesignation == input.motorDesignation {
+                reliability += 1.0
+            }
+            if abs(flight.rocketMassGrams - input.rocketMassGrams) <= 5 {
+                reliability += 0.75
+            }
+            if abs(flight.weather.windMPH - input.windMPH) <= 2 {
+                reliability += 0.35
+            }
+            if flight.attachments.contains(where: { ($0.videoModelConfidence ?? 0) >= 0.55 }) {
+                reliability += 0.2
+            }
+
+            let weight = reliability / pow(max(0.22, distance), 2)
+            return (flight, distance, weight)
+        }
+        .sorted { $0.distance < $1.distance }
+
+        guard let nearest = scored.first else { return nil }
+        let neighbors = Array(scored.prefix(min(8, max(3, scored.count))))
+        let totalWeight = neighbors.map(\.weight).reduce(0, +)
+        guard totalWeight > 0 else { return nil }
+
+        let altitude = neighbors.reduce(0) { total, neighbor in
+            total + neighbor.flight.measuredAltitudeFeet * neighbor.weight
+        } / totalWeight
+        let exactMotorCount = neighbors.filter { $0.flight.motorDesignation == input.motorDesignation }.count
+        let nearestBoost = max(0, (3.4 - nearest.distance) / 3.4) * 0.36
+        let sampleBoost = min(0.14, Double(neighbors.count) * 0.025)
+        let motorBoost = exactMotorCount > 0 ? 0.08 : 0
+        let confidence = min(0.84, max(0.28, 0.24 + nearestBoost + sampleBoost + motorBoost))
+        return LocalAltitudeEstimate(
+            altitudeFeet: altitude,
+            confidence: confidence,
+            sampleCount: neighbors.count,
+            nearestDistance: nearest.distance
+        )
     }
 
     private static func weightedMeanAbsoluteError(
@@ -685,6 +905,107 @@ enum PredictionEngine {
         return sorted[nextIndex]
     }
 
+    private struct EmpiricalMassAnchor {
+        var massGrams: Double
+        var observedAltitudeFeet: Double
+        var confidence: Double
+        var sampleCount: Int
+        var nearestMissFeet: Double
+    }
+
+    private static func baselineReadyMass(for rocket: Rocket, selectedMotor: MotorSpec, flights: [Flight]) -> Double {
+        let usableFlights = flights
+            .filter {
+                !$0.excludedFromAI &&
+                $0.rocketID == rocket.id &&
+                $0.rocketMassGrams.isFinite &&
+                $0.measuredAltitudeFeet.isFinite
+            }
+            .sorted { $0.flownAt > $1.flownAt }
+
+        if let recentSameMotor = usableFlights.first(where: { $0.motorDesignation == selectedMotor.designation }) {
+            return recentSameMotor.rocketMassGrams
+        }
+        if let recent = usableFlights.first {
+            return recent.rocketMassGrams
+        }
+        return rocket.dryMassGrams + 90
+    }
+
+    private static func empiricalMassAnchor(
+        flights: [Flight],
+        rocket: Rocket,
+        selectedMotor: MotorSpec,
+        weather: Weather,
+        targetAltitudeFeet: Double
+    ) -> EmpiricalMassAnchor? {
+        let sameRocketFlights = flights.filter {
+            !$0.excludedFromAI &&
+            $0.rocketID == rocket.id &&
+            $0.rocketMassGrams.isFinite &&
+            $0.measuredAltitudeFeet.isFinite &&
+            (50...4_000).contains($0.measuredAltitudeFeet) &&
+            (1...4_000).contains($0.rocketMassGrams)
+        }
+        guard !sameRocketFlights.isEmpty else { return nil }
+
+        let sameMotorFlights = sameRocketFlights.filter { $0.motorDesignation == selectedMotor.designation }
+        let candidateFlights = sameMotorFlights.isEmpty ? sameRocketFlights : sameMotorFlights
+        let scored = candidateFlights
+            .map { flight -> (flight: Flight, miss: Double, weight: Double) in
+                let miss = abs(flight.measuredAltitudeFeet - targetAltitudeFeet)
+                let windDistance = abs(flight.weather.windMPH - weather.windMPH)
+                let temperatureDistance = abs(flight.weather.temperatureF - weather.temperatureF)
+                let humidityDistance = abs(flight.weather.humidityPercent - weather.humidityPercent)
+                var weight = 1 / pow(max(3, miss), 2)
+                if flight.motorDesignation == selectedMotor.designation {
+                    weight *= 1.8
+                }
+                weight *= max(0.45, 1.25 - windDistance / 18)
+                weight *= max(0.60, 1.10 - temperatureDistance / 90)
+                weight *= max(0.70, 1.05 - humidityDistance / 160)
+                if flight.attachments.contains(where: { ($0.videoModelConfidence ?? 0) >= 0.55 }) {
+                    weight *= 1.12
+                }
+                return (flight, miss, weight)
+            }
+            .sorted { left, right in
+                if abs(left.miss - right.miss) < 0.1 {
+                    return left.flight.flownAt > right.flight.flownAt
+                }
+                return left.miss < right.miss
+            }
+
+        guard let nearest = scored.first else { return nil }
+        let closeEnoughFeet = max(30.0, targetAltitudeFeet * 0.045)
+        guard nearest.miss <= closeEnoughFeet else { return nil }
+
+        if nearest.miss <= 3 {
+            return EmpiricalMassAnchor(
+                massGrams: nearest.flight.rocketMassGrams,
+                observedAltitudeFeet: nearest.flight.measuredAltitudeFeet,
+                confidence: sameMotorFlights.isEmpty ? 0.68 : 0.82,
+                sampleCount: 1,
+                nearestMissFeet: nearest.miss
+            )
+        }
+
+        let localMatches = Array(scored.prefix(8).filter { $0.miss <= closeEnoughFeet })
+        let totalWeight = localMatches.map(\.weight).reduce(0, +)
+        guard totalWeight > 0 else { return nil }
+        let mass = localMatches.reduce(0) { $0 + $1.flight.rocketMassGrams * $1.weight } / totalWeight
+        let altitude = localMatches.reduce(0) { $0 + $1.flight.measuredAltitudeFeet * $1.weight } / totalWeight
+        let motorBonus = sameMotorFlights.isEmpty ? 0.0 : 0.08
+        let confidence = min(0.88, 0.55 + Double(min(localMatches.count, 5)) * 0.045 + motorBonus)
+        return EmpiricalMassAnchor(
+            massGrams: mass,
+            observedAltitudeFeet: altitude,
+            confidence: confidence,
+            sampleCount: localMatches.count,
+            nearestMissFeet: nearest.miss
+        )
+    }
+
     private static func bestMassFromModel(flights: [Flight], input: PredictionInput, targetAltitude: Double) -> Double {
         var bestMass = input.rocketMassGrams
         var bestError = Double.greatestFiniteMagnitude
@@ -707,6 +1028,27 @@ enum PredictionEngine {
         let lowerBound = max(1, min(rocket.dryMassGrams * 0.45, currentMass - 1_200))
         let upperBound = max(currentMass + 1_800, currentMass * 3.2, rocket.dryMassGrams + 2_000)
         return lowerBound...upperBound
+    }
+
+    private static func massEvidencePenalty(
+        massGrams: Double,
+        flights: [Flight],
+        selectedMotor: MotorSpec
+    ) -> Double {
+        let finiteFlights = flights.filter {
+            !$0.excludedFromAI &&
+            $0.rocketMassGrams.isFinite &&
+            $0.measuredAltitudeFeet.isFinite
+        }
+        let sameMotorMasses = finiteFlights
+            .filter { $0.motorDesignation == selectedMotor.designation }
+            .map(\.rocketMassGrams)
+        let masses = sameMotorMasses.isEmpty ? finiteFlights.map(\.rocketMassGrams) : sameMotorMasses
+        guard masses.count >= 3 else { return 0 }
+
+        let nearestMassDelta = masses.map { abs($0 - massGrams) }.min() ?? 0
+        guard nearestMassDelta > 80 else { return 0 }
+        return min(120, (nearestMassDelta - 80) * 0.12)
     }
 
     private static func motorRecommendation(flights: [Flight], input: PredictionInput, targetAltitude: Double) -> Recommendation? {
@@ -734,28 +1076,44 @@ enum PredictionEngine {
         )
     }
 
-    private static func timingRecommendation(flights: [Flight], targetRange: ClosedRange<Double>) -> Recommendation? {
+    private static func timingRecommendation(
+        flights: [Flight],
+        targetRange: ClosedRange<Double>,
+        currentWindMPH: Double
+    ) -> Recommendation? {
         let timedFlights = flights.filter { $0.flightTimeSeconds != nil }
         guard timedFlights.count >= 3 else { return nil }
         let averageTime = timedFlights.compactMap(\.flightTimeSeconds).reduce(0, +) / Double(timedFlights.count)
-        if targetRange.contains(averageTime) {
+        let targetMid = (targetRange.lowerBound + targetRange.upperBound) / 2
+        let reefedTimedFlights = timedFlights.filter { $0.parachuteReefedCentimeters != nil }
+        let averageReefedTime = reefedTimedFlights.compactMap(\.flightTimeSeconds).reduce(0, +) / Double(max(reefedTimedFlights.count, 1))
+
+        if let windModel = windAwareReefingModel(from: reefedTimedFlights),
+           let suggestedReef = windModel.suggestedReef(targetSeconds: targetMid, currentWindMPH: currentWindMPH) {
+            let predictedTime = windModel.predictedTime(reefedCentimeters: suggestedReef, windMPH: currentWindMPH)
             return Recommendation(
-                title: "Timing is in range",
-                detail: "Your logged flights average \(String(format: "%.1f", averageTime)) s, inside the \(Int(targetRange.lowerBound))-\(Int(targetRange.upperBound)) s window. Keep parachute and delay close to the current setup.",
+                title: "Tune reefing for wind",
+                detail: "Your logs show flight time changes with both reefing and wind. For about \(String(format: "%.1f", currentWindMPH)) mph wind, try \(String(format: "%.1f", suggestedReef)) cm reefed; the model predicts about \(String(format: "%.1f", predictedTime)) s toward the \(String(format: "%.1f", targetMid)) s target.",
+                priority: .medium
+            )
+        }
+
+        if reefedTimedFlights.count >= 3, targetRange.contains(averageReefedTime) {
+            return Recommendation(
+                title: "Reefed timing is in range",
+                detail: "Flights with logged reefing average \(String(format: "%.1f", averageReefedTime)) s, inside the \(Int(targetRange.lowerBound))-\(Int(targetRange.upperBound)) s window. Keep reefed centimeters close to the current setup.",
                 priority: .low
             )
         }
 
-        let targetMid = (targetRange.lowerBound + targetRange.upperBound) / 2
-        let timeDelta = targetMid - averageTime
-        let reefedFlights = timedFlights.filter { $0.parachuteReefedCentimeters != nil }
         let reefSlope = empiricalSlope(
-            flights: reefedFlights,
+            flights: reefedTimedFlights,
             x: { $0.parachuteReefedCentimeters ?? 0 },
-            y: { $0.flightTimeSeconds ?? averageTime }
+            y: { $0.flightTimeSeconds ?? averageReefedTime }
         )
         if let reefSlope, abs(reefSlope) > 0.03 {
-            let currentReef = reefedFlights.compactMap(\.parachuteReefedCentimeters).reduce(0, +) / Double(reefedFlights.count)
+            let timeDelta = targetMid - averageReefedTime
+            let currentReef = reefedTimedFlights.compactMap(\.parachuteReefedCentimeters).reduce(0, +) / Double(reefedTimedFlights.count)
             let reefChange = timeDelta / reefSlope
             let suggestedReef = max(0, currentReef + reefChange)
             return Recommendation(
@@ -765,12 +1123,21 @@ enum PredictionEngine {
             )
         }
 
+        if targetRange.contains(averageTime) {
+            return Recommendation(
+                title: "Timing is in range",
+                detail: "Your timed flights average \(String(format: "%.1f", averageTime)) s, but reefing advice needs flights where centimeters reefed were logged.",
+                priority: .low
+            )
+        }
+
         let chuteSlope = empiricalSlope(
             flights: timedFlights,
             x: \.parachuteSizeInches,
             y: { $0.flightTimeSeconds ?? averageTime }
         )
         if let chuteSlope, abs(chuteSlope) > 0.05 {
+            let timeDelta = targetMid - averageTime
             let chuteChange = min(max(timeDelta / chuteSlope, -8), 8)
             return Recommendation(
                 title: chuteChange > 0 ? "Use more chute area" : "Use less chute area",
@@ -781,7 +1148,7 @@ enum PredictionEngine {
 
         return Recommendation(
             title: averageTime < targetRange.lowerBound ? "Increase flight time" : "Reduce flight time",
-            detail: "Your logged flights average \(String(format: "%.1f", averageTime)) s. Add timed flights with reefed length in centimeters so the app can calculate the exact reefing adjustment.",
+            detail: "Your logged flights average \(String(format: "%.1f", averageTime)) s. Add timed flights with reefed length in centimeters so the app can calculate the exact reefing adjustment from reefed flights only.",
             priority: .medium
         )
     }
@@ -789,13 +1156,20 @@ enum PredictionEngine {
     private static func recommendedReefedCentimeters(
         flights: [Flight],
         targetRange: ClosedRange<Double>?,
-        estimatedFlightTime: Double
+        estimatedFlightTime: Double,
+        currentWindMPH: Double
     ) -> Double? {
         guard let targetRange else { return nil }
         let timedFlights = flights.filter { $0.flightTimeSeconds != nil && $0.parachuteReefedCentimeters != nil }
         guard timedFlights.count >= 3 else { return nil }
         let averageTime = timedFlights.compactMap(\.flightTimeSeconds).reduce(0, +) / Double(timedFlights.count)
         let targetMid = (targetRange.lowerBound + targetRange.upperBound) / 2
+
+        if let windModel = windAwareReefingModel(from: timedFlights),
+           let windAwareReef = windModel.suggestedReef(targetSeconds: targetMid, currentWindMPH: currentWindMPH) {
+            return windAwareReef
+        }
+
         guard let reefSlope = empiricalSlope(
             flights: timedFlights,
             x: { $0.parachuteReefedCentimeters ?? 0 },
@@ -807,6 +1181,94 @@ enum PredictionEngine {
         let currentTime = averageTime.isFinite ? averageTime : estimatedFlightTime
         let reefChange = (targetMid - currentTime) / reefSlope
         return max(0, currentReef + reefChange)
+    }
+
+    private struct WindAwareReefingModel {
+        var averageReefCentimeters: Double
+        var averageWindMPH: Double
+        var averageFlightTimeSeconds: Double
+        var reefSlopeSecondsPerCentimeter: Double
+        var windSlopeSecondsPerMPH: Double
+        var sampleCount: Int
+
+        func predictedTime(reefedCentimeters: Double, windMPH: Double) -> Double {
+            averageFlightTimeSeconds
+                + reefSlopeSecondsPerCentimeter * (reefedCentimeters - averageReefCentimeters)
+                + windSlopeSecondsPerMPH * (windMPH - averageWindMPH)
+        }
+
+        func suggestedReef(targetSeconds: Double, currentWindMPH: Double) -> Double? {
+            guard abs(reefSlopeSecondsPerCentimeter) > 0.03 else { return nil }
+            let windAdjustment = windSlopeSecondsPerMPH * (currentWindMPH - averageWindMPH)
+            let reefDelta = (targetSeconds - averageFlightTimeSeconds - windAdjustment) / reefSlopeSecondsPerCentimeter
+            let suggested = averageReefCentimeters + reefDelta
+            guard suggested.isFinite else { return nil }
+            return min(max(suggested, 0), 500)
+        }
+    }
+
+    private static func windAwareReefingModel(from flights: [Flight]) -> WindAwareReefingModel? {
+        let samples = flights.compactMap { flight -> (reef: Double, wind: Double, time: Double)? in
+            guard
+                let reef = flight.parachuteReefedCentimeters,
+                let time = flight.flightTimeSeconds,
+                reef.isFinite,
+                time.isFinite,
+                flight.weather.windMPH.isFinite,
+                (0...500).contains(reef),
+                (5...180).contains(time),
+                (0...120).contains(flight.weather.windMPH)
+            else {
+                return nil
+            }
+            return (reef, flight.weather.windMPH, time)
+        }
+        guard samples.count >= 4 else { return nil }
+
+        let averageReef = samples.map(\.reef).reduce(0, +) / Double(samples.count)
+        let averageWind = samples.map(\.wind).reduce(0, +) / Double(samples.count)
+        let averageTime = samples.map(\.time).reduce(0, +) / Double(samples.count)
+
+        let centered = samples.map {
+            (
+                reef: $0.reef - averageReef,
+                wind: $0.wind - averageWind,
+                time: $0.time - averageTime
+            )
+        }
+        let reefVariance = centered.reduce(0) { $0 + $1.reef * $1.reef }
+        guard reefVariance > 0.5 else { return nil }
+
+        let windVariance = centered.reduce(0) { $0 + $1.wind * $1.wind }
+        let reefTime = centered.reduce(0) { $0 + $1.reef * $1.time }
+        let ridge = max(0.35, Double(samples.count) * 0.04)
+
+        let reefSlope: Double
+        let windSlope: Double
+        if windVariance > 0.5 {
+            let reefWind = centered.reduce(0) { $0 + $1.reef * $1.wind }
+            let windTime = centered.reduce(0) { $0 + $1.wind * $1.time }
+            let matrix = [
+                [reefVariance + ridge, reefWind],
+                [reefWind, windVariance + ridge]
+            ]
+            let slopes = solveLinearSystem(matrix: matrix, values: [reefTime, windTime])
+            reefSlope = slopes[0]
+            windSlope = slopes[1]
+        } else {
+            reefSlope = reefTime / (reefVariance + ridge)
+            windSlope = 0
+        }
+
+        guard reefSlope.isFinite, windSlope.isFinite, abs(reefSlope) > 0.03 else { return nil }
+        return WindAwareReefingModel(
+            averageReefCentimeters: averageReef,
+            averageWindMPH: averageWind,
+            averageFlightTimeSeconds: averageTime,
+            reefSlopeSecondsPerCentimeter: reefSlope,
+            windSlopeSecondsPerMPH: windSlope,
+            sampleCount: samples.count
+        )
     }
 
     private static func empiricalSlope(

@@ -325,6 +325,34 @@ final class FlightStore: ObservableObject {
         save()
     }
 
+    @discardableResult
+    func replaceImportedFlights(_ importedFlights: [Flight], sourceNames: Set<String>) -> (removed: Int, added: Int) {
+        let normalizedSources = sourceNames
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+
+        let beforeCount = flights.count
+        if !normalizedSources.isEmpty {
+            flights.removeAll { flight in
+                let notes = flight.notes.lowercased()
+                return normalizedSources.contains { source in
+                    notes.contains("imported from \(source)")
+                }
+            }
+        }
+
+        let existingIDs = Set(flights.map(\.id))
+        let newFlights = importedFlights.filter { !existingIDs.contains($0.id) }
+        if !newFlights.isEmpty {
+            flights.insert(contentsOf: newFlights, at: 0)
+        }
+        if beforeCount != flights.count || !newFlights.isEmpty {
+            recordAILearningInput()
+            save()
+        }
+        return (beforeCount - flights.count + newFlights.count, newFlights.count)
+    }
+
     func deleteFlight(id: UUID) {
         flights.removeAll { $0.id == id }
         recordAILearningInput()
@@ -419,8 +447,8 @@ final class FlightStore: ObservableObject {
 
     func restartLaunchWindow(duration: Int = 45 * 60) {
         launchWindowSeconds = duration
-        launchWindowEndsAt = Date().addingTimeInterval(TimeInterval(duration))
-        launchTimerState = .running
+        launchWindowEndsAt = nil
+        launchTimerState = .paused
         save(immediate: true)
     }
 

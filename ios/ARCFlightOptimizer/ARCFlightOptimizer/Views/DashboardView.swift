@@ -242,7 +242,7 @@ struct DashboardView: View {
 
                 Button {
                     store.restartLaunchWindow()
-                    updateLaunchTimerLiveActivity()
+                    endLaunchTimerLiveActivity()
                 } label: {
                     Label("Restart", systemImage: "arrow.clockwise")
                         .frame(maxWidth: .infinity)
@@ -415,6 +415,13 @@ struct DashboardView: View {
         )
     }
 
+    private func endLaunchTimerLiveActivity() {
+        LaunchTimerLiveActivity.end(
+            state: store.launchTimerState,
+            remainingSeconds: store.launchWindowRemaining()
+        )
+    }
+
     private func addChecklistItem() {
         store.addLaunchChecklistItem(newChecklistItem)
         newChecklistItem = ""
@@ -451,6 +458,7 @@ private struct AllFlightsView: View {
     @EnvironmentObject private var store: FlightStore
     @State private var searchText = ""
     @State private var editingFlight: Flight?
+    @State private var expandedFlightID: UUID?
 
     private var filteredFlights: [Flight] {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -476,12 +484,29 @@ private struct AllFlightsView: View {
                 ForEach(filteredFlights) { flight in
                     VStack(alignment: .leading, spacing: 10) {
                         DashboardFlightRow(flight: flight)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                                    expandedFlightID = expandedFlightID == flight.id ? nil : flight.id
+                                }
+                            }
+                        if expandedFlightID == flight.id {
+                            DashboardFlightAnalysisCard(flight: flight)
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                        }
                         HStack {
                             Button {
                                 editingFlight = flight
                             } label: {
                                 Label("Edit", systemImage: "square.and.pencil")
                                     .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button(expandedFlightID == flight.id ? "Hide Summary" : "Summary") {
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                                    expandedFlightID = expandedFlightID == flight.id ? nil : flight.id
+                                }
                             }
                             .buttonStyle(.bordered)
 
@@ -508,6 +533,59 @@ private struct AllFlightsView: View {
         .searchable(text: $searchText, prompt: "Rocket, motor, notes, egg")
         .sheet(item: $editingFlight) { flight in
             FlightEditSheet(flight: flight)
+        }
+    }
+}
+
+private struct DashboardFlightAnalysisCard: View {
+    @EnvironmentObject private var store: FlightStore
+    let flight: Flight
+
+    var body: some View {
+        let analysis = VideoFlightAnalyzer.diagnoseFlight(
+            flight: flight,
+            rocket: store.rocket(for: flight),
+            targetAltitudeFeet: targetAltitude,
+            targetFlightTimeRange: timeRange
+        )
+        VStack(alignment: .leading, spacing: 6) {
+            Label(analysis.title, systemImage: "waveform.and.magnifyingglass")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(color(analysis.severityColorName))
+            Text(analysis.summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ForEach(analysis.recommendations.prefix(2), id: \.self) { item in
+                Text("Improve: \(item)")
+                    .font(.caption2)
+                    .foregroundStyle(Color.arcMint)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color(analysis.severityColorName).opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(color(analysis.severityColorName).opacity(0.35)))
+    }
+
+    private var targetAltitude: Double {
+        if (flight.round ?? "") == FlightMode.hobby.shortTitle {
+            return flight.targetAltitudeFeet ?? store.targetAltitudeFeet
+        }
+        return store.scoringTargetAltitude(for: flight)
+    }
+
+    private var timeRange: ClosedRange<Double>? {
+        (flight.round ?? "") == FlightMode.hobby.shortTitle ? nil : store.syncedCompetitionInfo.flightTimeRange
+    }
+
+    private func color(_ name: String) -> Color {
+        switch name {
+        case "mint":
+            return Color.arcMint
+        case "orange":
+            return Color.arcOrange
+        default:
+            return Color.arcAmber
         }
     }
 }
@@ -549,7 +627,7 @@ private struct FlightEditSheet: View {
         _reefedCentimeters = State(initialValue: flight.parachuteReefedCentimeters)
         _descentSystem = State(initialValue: flight.descentSystem)
         _eggStatus = State(initialValue: flight.eggStatus)
-        _notes = State(initialValue: flight.notes)
+        _notes = State(initialValue: FlightNoteCleaner.editableNotes(from: flight.notes))
     }
 
     private var selectedRocket: Rocket? {

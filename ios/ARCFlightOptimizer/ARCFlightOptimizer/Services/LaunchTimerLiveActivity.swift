@@ -43,9 +43,28 @@ enum LaunchTimerLiveActivity {
             }
         }
     }
+
+    static func end(state: LaunchTimerState, remainingSeconds: Int) {
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+
+        Task {
+            let content = ActivityContent(
+                state: LaunchTimerActivityAttributes.ContentState(
+                    stateRawValue: state.rawValue,
+                    remainingSeconds: remainingSeconds,
+                    endsAt: nil
+                ),
+                staleDate: nil
+            )
+            if let activity {
+                await activity.end(content, dismissalPolicy: .immediate)
+            }
+        }
+    }
 }
 #else
 enum LaunchTimerLiveActivity {
     static func update(state: LaunchTimerState, remainingSeconds: Int, endsAt: Date?) {}
+    static func end(state: LaunchTimerState, remainingSeconds: Int) {}
 }
 #endif

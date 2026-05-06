@@ -23,6 +23,7 @@ struct QuickLogView: View {
     @State private var weatherStatus = "Manual values work offline."
     @State private var isLoadingWeather = false
     @State private var editingFlightID: UUID?
+    @State private var expandedFlightID: UUID?
     @State private var isFieldMode = false
     @State private var selectedVideoItem: PhotosPickerItem?
     @State private var videoAttachmentStatus: String?
@@ -79,10 +80,10 @@ struct QuickLogView: View {
                     .padding(.bottom, 28)
                 }
                 .onChange(of: editingFlightID) { _, flightID in
-                    guard flightID != nil else { return }
+                    guard let flightID else { return }
                     DispatchQueue.main.async {
                         withAnimation(.easeInOut(duration: 0.16)) {
-                            scrollProxy.scrollTo("flight-editor-card", anchor: .top)
+                            scrollProxy.scrollTo("flight-row-\(flightID.uuidString)", anchor: .center)
                         }
                     }
                 }
@@ -388,10 +389,6 @@ struct QuickLogView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Manage Flights")
                 .font(.title3.bold())
-            if editingFlightID != nil {
-                inlineEditForm
-                    .id("flight-editor-card")
-            }
             if store.flights.isEmpty {
                 Text("No flights logged yet.")
                     .foregroundStyle(.secondary)
@@ -400,7 +397,7 @@ struct QuickLogView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 LazyVStack(spacing: 10) {
-                    ForEach(Array(displayedFlights.enumerated()), id: \.element.id) { index, flight in
+                    ForEach(Array(displayedFlights.enumerated()), id: \.element.id) { _, flight in
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(alignment: .top) {
                             VStack(alignment: .leading, spacing: 4) {
@@ -449,7 +446,7 @@ struct QuickLogView: View {
                                         .font(.caption)
                                         .foregroundStyle(Color.arcOrange)
                                 }
-                                if index < 3 || editingFlightID == flight.id {
+                                if expandedFlightID == flight.id || editingFlightID == flight.id {
                                     flightIssueAnalysisCard(for: flight)
                                 } else if flight.attachments.contains(where: { $0.kind == .video }) {
                                     Text("Video analysis is saved for this flight and still feeds the AI model.")
@@ -459,8 +456,16 @@ struct QuickLogView: View {
                             }
                             Spacer()
                             VStack(alignment: .trailing, spacing: 8) {
+                                Button(expandedFlightID == flight.id ? "Hide" : "Summary") {
+                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                                        expandedFlightID = expandedFlightID == flight.id ? nil : flight.id
+                                    }
+                                }
+                                .buttonStyle(.bordered)
                                 Button("Edit") {
-                                    loadFlightIntoForm(flight)
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
+                                        loadFlightIntoForm(flight)
+                                    }
                                 }
                                 .buttonStyle(.bordered)
                                 Button("Delete", role: .destructive) {
@@ -473,9 +478,21 @@ struct QuickLogView: View {
                                 .buttonStyle(.bordered)
                             }
                         }
+                        if editingFlightID == flight.id {
+                            inlineEditForm
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                        }
                         Text(flight.flownAt, style: .date)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                    .id("flight-row-\(flight.id.uuidString)")
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        guard editingFlightID != flight.id else { return }
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                            expandedFlightID = expandedFlightID == flight.id ? nil : flight.id
+                        }
                     }
                     .padding()
                     .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 18))
@@ -838,8 +855,9 @@ struct QuickLogView: View {
         reefedCentimeters = flight.parachuteReefedCentimeters
         descentSystem = flight.descentSystem
         eggStatus = flight.eggStatus
-        notes = flight.notes
+        notes = FlightNoteCleaner.editableNotes(from: flight.notes)
         attachments = flight.attachments
+        expandedFlightID = flight.id
     }
 
     private func resetForm() {
