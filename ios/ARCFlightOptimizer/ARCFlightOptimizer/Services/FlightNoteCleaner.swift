@@ -31,14 +31,14 @@ enum FlightNoteCleaner {
             "import checked",
             "import review:",
             "import warning:",
-                "sheet pattern check:",
-                "weather conditions:",
-                "recovery blanket/wadding:",
-                "column map:",
-                "matched:",
-                "<td",
-                "</"
-            ]
-            return metadataPrefixes.contains { lowercased.hasPrefix($0) }
-        }
+            "sheet pattern check:",
+            "weather conditions:",
+            "recovery blanket/wadding:",
+            "column map:",
+            "matched:",
+            "<td",
+            "</"
+        ]
+        return metadataPrefixes.contains { lowercased.hasPrefix($0) }
     }
+}

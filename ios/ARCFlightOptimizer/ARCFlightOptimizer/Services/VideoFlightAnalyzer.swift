@@ -152,7 +152,7 @@ enum VideoFlightAnalyzer {
                     targetSeconds: (targetFlightTimeRange.lowerBound + targetFlightTimeRange.upperBound) / 2,
                     effectiveSeconds: effectiveTime
                 )
-                recommendations.append(reefAdvice ?? "Increase parachute area or inspect deployment timing if the video shows a late canopy.")
+                recommendations.append(reefAdvice ?? "Try less reefing and inspect deployment timing if the video shows a late canopy.")
             } else {
                 evidence.append("Flight time was \(String(format: "%.1f", effectiveTime - targetFlightTimeRange.upperBound)) s long.")
                 causes.append("descent may be too slow")
@@ -161,7 +161,7 @@ enum VideoFlightAnalyzer {
                     targetSeconds: (targetFlightTimeRange.lowerBound + targetFlightTimeRange.upperBound) / 2,
                     effectiveSeconds: effectiveTime
                 )
-                recommendations.append(reefAdvice ?? "Reduce parachute size slightly or check for excessive drift in wind.")
+                recommendations.append(reefAdvice ?? "Try more reefing and check for excessive drift in wind.")
             }
         } else if let videoTime {
             evidence.append("Video estimated flight duration at \(String(format: "%.1f", videoTime)) s.")

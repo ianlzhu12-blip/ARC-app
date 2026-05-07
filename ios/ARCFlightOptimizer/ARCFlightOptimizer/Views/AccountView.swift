@@ -53,6 +53,8 @@ struct AccountView: View {
                     .allowsHitTesting(false)
             }
             .navigationTitle("Account")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
             .onAppear {
                 displayName = store.personalAccount.displayName
                 email = store.personalAccount.email
@@ -816,7 +818,7 @@ struct AccountView: View {
                     )
                 }
                 ?? rocket.parachuteSizeInches
-            let reefedFromName = inferredReefedCentimeters(from: [rocketName, fileName])
+            let reefedFromName = inferredReefedCentimeters(from: [rocketName, fileName], allowsBareCentimeterName: true)
             let reefedCentimeters = reefedFromName
                 ?? value(in: columns, columnMap: columnMap, role: .reefedCentimeters)
                 .flatMap {
@@ -1076,7 +1078,14 @@ struct AccountView: View {
     }
 
     private var reefedCentimetersKeys: [String] {
-        ["reef", "reefed", "reefed cm", "reef cm", "reefing", "reefing cm", "reef length", "reef length cm", "reefed length", "reefed length cm", "centimeters reefed", "cm reefed", "chute reef", "parachute reef"]
+        [
+            "reef", "reefed", "reefed cm", "reef cm", "reefing", "reefing cm",
+            "reef length", "reef length cm", "reefed length", "reefed length cm",
+            "reefing length", "reefing length cm", "centimeters reefed", "cm reefed",
+            "chute reef", "parachute reef", "recovery reef", "reef line",
+            "reef cord", "reef string", "tie length", "tied length", "band length",
+            "wrap length", "wrapped length", "chute opening", "opening cm"
+        ]
     }
 
     private var notesKeys: [String] {
@@ -1108,7 +1117,7 @@ struct AccountView: View {
         case .wind: return windKeys + ["wind velocity", "breeze", "gust", "gust mph"]
         case .humidity: return humidityKeys + ["humid", "humidity percent"]
         case .parachute: return parachuteKeys + ["parachute diameter", "chute diameter", "recovery size"]
-        case .reefedCentimeters: return reefedCentimetersKeys + ["reefed centimeters", "reef centimeters", "reefed amount", "reef amount"]
+        case .reefedCentimeters: return reefedCentimetersKeys + ["reefed centimeters", "reef centimeters", "reefed amount", "reef amount", "tied cm", "band cm", "wrap cm", "opening centimeters"]
         case .weatherConditions: return ["weather conditions", "conditions", "sky", "clouds", "field weather"]
         case .recoveryBlanket: return ["dog barf", "dog barf g", "nomex", "wadding", "recovery blanket", "blanket"]
         case .importedPoints: return ["how many points", "points", "score", "flight score", "arc points"]
@@ -1710,24 +1719,58 @@ struct AccountView: View {
         return nil
     }
 
-    private func inferredReefedCentimeters(from values: [String]) -> Double? {
+    private func inferredReefedCentimeters(from values: [String], allowsBareCentimeterName: Bool = false) -> Double? {
         let combined = values.joined(separator: " ").lowercased()
-        if combined.contains("no reef") || combined.contains("0 reef") {
+        if combined.contains("no reef") ||
+            combined.contains("unreefed") ||
+            combined.contains("no wrap") ||
+            combined.contains("0 reef") {
             return 0
         }
-        guard combined.contains("reef") else { return nil }
-        let patterns = [
-            #"reef(?:ed|ing)?\s*(?:a\s*)?(?:bit\s*)?([0-9]+(?:\.[0-9]+)?)\s*(?:cm|centimeter|centimeters)"#,
-            #"([0-9]+(?:\.[0-9]+)?)\s*(?:cm|centimeter|centimeters)\s*(?:reef|reefed|reefing)"#,
-            #"reef(?:ed|ing)?\s*(?:length\s*)?(?:is\s*)?([0-9]+(?:\.[0-9]+)?)\b"#,
-            #"([0-9]+(?:\.[0-9]+)?)\s*(?:cm\s*)?(?:reef|reefed|reefing)\b"#
+
+        let contextWords = [
+            "reef", "reefed", "reefing", "chute", "parachute", "recovery",
+            "shroud", "line", "cord", "string", "tie", "tied", "band",
+            "wrap", "wrapped", "opening", "restrict", "restricted",
+            "constrict", "loop"
         ]
-        for pattern in patterns {
+        let hasReefingContext = contextWords.contains { combined.contains($0) }
+        let cmValues = combined.matches(for: #"\b([0-9]+(?:\.[0-9]+)?)\s*(?:cm|centimeter|centimeters)\b"#)
+            .compactMap(Double.init)
+            .filter { (0...500).contains($0) }
+        guard hasReefingContext || allowsBareCentimeterName else { return nil }
+
+        let centimeterPatterns = [
+            #"(?:reef|reefed|reefing|tie|tied|wrap|wrapped|band|line|cord|string|opening|restrict(?:ed|or)?|constrict(?:ed)?|loop)\s*(?:length|len|is|at|to|=|:|-)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:cm|centimeter|centimeters)"#,
+            #"([0-9]+(?:\.[0-9]+)?)\s*(?:cm|centimeter|centimeters)\s*(?:reef|reefed|reefing|tie|tied|wrap|wrapped|band|line|cord|string|opening|restrict(?:ed|or)?|constrict(?:ed)?|loop)"#,
+            #"reef(?:ed|ing)?\s*(?:a\s*)?(?:bit\s*)?([0-9]+(?:\.[0-9]+)?)\s*(?:cm|centimeter|centimeters)"#,
+            #"reef(?:ed|ing)?\s*(?:length\s*)?(?:is|at|to|=|:)?\s*([0-9]+(?:\.[0-9]+)?)\b"#,
+            #"\b(?:r|rf|reef)\s*[-_ ]?([0-9]+(?:\.[0-9]+)?)\b"#
+        ]
+        for pattern in centimeterPatterns {
             if let match = combined.firstMatch(for: pattern),
                let centimeters = Double(match),
                (0...500).contains(centimeters) {
                 return centimeters
             }
+        }
+
+        let inchPatterns = [
+            #"(?:reef|reefed|reefing|tie|tied|wrap|wrapped|band|opening)\s*(?:length|len|is|at|to|=|:|-)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:in|inch|inches)"#,
+            #"([0-9]+(?:\.[0-9]+)?)\s*(?:in|inch|inches)\s*(?:reef|reefed|reefing|tie|tied|wrap|wrapped|band|opening)"#
+        ]
+        for pattern in inchPatterns {
+            if let match = combined.firstMatch(for: pattern),
+               let inches = Double(match) {
+                let centimeters = inches * 2.54
+                if (0...500).contains(centimeters) {
+                    return centimeters
+                }
+            }
+        }
+
+        if cmValues.count == 1 {
+            return cmValues[0]
         }
         return nil
     }

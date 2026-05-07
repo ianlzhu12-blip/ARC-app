@@ -62,6 +62,8 @@ struct RocketsView: View {
             .scrollDismissesKeyboard(.interactively)
             .scrollIndicators(.visible)
             .navigationTitle("Teams & Rockets")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
             .fileImporter(
                 isPresented: $isImportingDesign,
                 allowedContentTypes: openRocketTypes,

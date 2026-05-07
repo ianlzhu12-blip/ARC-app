@@ -294,6 +294,8 @@ struct InsightsView: View {
             .scrollDismissesKeyboard(.interactively)
             .scrollIndicators(.visible)
             .navigationTitle("Insights")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
             .onAppear {
                 normalizeInsightsSelections()
                 predictedMass = store.activeRocket.map { $0.dryMassGrams + 90 } ?? predictedMass
@@ -366,16 +368,27 @@ struct InsightsView: View {
             HStack {
                 VStack(alignment: .leading) {
                     Text("Current prediction")
-                        .foregroundStyle(.secondary)
+                        .font(.caption.weight(.heavy))
+                        .foregroundStyle(Color.arcSubtext)
+                        .textCase(.uppercase)
+                        .tracking(1.2)
                     if let optimization {
                         Text("\(Int(optimization.suggestedMassGrams)) g")
                             .font(.system(size: 44, weight: .black, design: .rounded))
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [Color.arcText, Color.arcMint.opacity(0.92)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
                         Text(store.flightMode == .hobby && hobbyMaxAltitude ? "Suggested loaded weight for max altitude" : "Suggested loaded weight for \(Int(targetAltitudeForAI)) ft")
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(Color.arcAmber)
                     } else {
                         Text("-- g")
                             .font(.system(size: 44, weight: .black, design: .rounded))
+                            .foregroundStyle(Color.arcText)
                         Text("Add a rocket and motor to calculate weight")
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(Color.arcAmber)
@@ -402,8 +415,7 @@ struct InsightsView: View {
                     .font(.headline)
                     .foregroundStyle(Color.arcAmber)
             }
-            .padding()
-            .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
+            .innerPanelStyle(cornerRadius: 16)
 
             Picker("Rocket filter", selection: $selectedRocketID) {
                 Text("All rockets").tag(Optional<UUID>.none)
@@ -440,7 +452,7 @@ struct InsightsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .padding(.top, 4)
+                .innerPanelStyle(cornerRadius: 16)
             }
         }
         .cardStyle()
@@ -456,8 +468,7 @@ struct InsightsView: View {
                 NumberField(title: "Target Height", value: $hobbyTargetHeight, suffix: "ft")
             }
         }
-        .padding()
-        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
+        .innerPanelStyle(cornerRadius: 16)
     }
 
     private func aiOptimization(for rocket: Rocket, motor: MotorSpec) -> OptimizationResult {

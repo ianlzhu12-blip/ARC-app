@@ -95,6 +95,8 @@ struct QuickLogView: View {
             .scrollDismissesKeyboard(.interactively)
             .scrollIndicators(.visible)
             .navigationTitle("\(store.flightMode.shortTitle) Log")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
             .onAppear {
                 primeDefaultValues()
             }
@@ -398,7 +400,7 @@ struct QuickLogView: View {
                     .foregroundStyle(.secondary)
                 LazyVStack(spacing: 10) {
                     ForEach(Array(displayedFlights.enumerated()), id: \.element.id) { _, flight in
-                    VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 8) {
                         HStack(alignment: .top) {
                             VStack(alignment: .leading, spacing: 4) {
                                 let summary = store.scoreSummary(for: flight)
@@ -446,9 +448,8 @@ struct QuickLogView: View {
                                         .font(.caption)
                                         .foregroundStyle(Color.arcOrange)
                                 }
-                                if expandedFlightID == flight.id || editingFlightID == flight.id {
-                                    flightIssueAnalysisCard(for: flight)
-                                } else if flight.attachments.contains(where: { $0.kind == .video }) {
+                                if expandedFlightID != flight.id,
+                                   flight.attachments.contains(where: { $0.kind == .video }) {
                                     Text("Video analysis is saved for this flight and still feeds the AI model.")
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
@@ -456,18 +457,26 @@ struct QuickLogView: View {
                             }
                             Spacer()
                             VStack(alignment: .trailing, spacing: 8) {
-                                Button(expandedFlightID == flight.id ? "Hide" : "Summary") {
+                                flightDropdownButton(
+                                    title: "Summary",
+                                    isExpanded: expandedFlightID == flight.id
+                                ) {
                                     withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
                                         expandedFlightID = expandedFlightID == flight.id ? nil : flight.id
                                     }
                                 }
-                                .buttonStyle(.bordered)
-                                Button("Edit") {
+                                flightDropdownButton(
+                                    title: "Edit",
+                                    isExpanded: editingFlightID == flight.id
+                                ) {
                                     withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
-                                        loadFlightIntoForm(flight)
+                                        if editingFlightID == flight.id {
+                                            resetForm()
+                                        } else {
+                                            loadFlightIntoForm(flight)
+                                        }
                                     }
                                 }
-                                .buttonStyle(.bordered)
                                 Button("Delete", role: .destructive) {
                                     if editingFlightID == flight.id {
                                         resetForm()
@@ -478,6 +487,10 @@ struct QuickLogView: View {
                                 .buttonStyle(.bordered)
                             }
                         }
+                        if expandedFlightID == flight.id {
+                            flightIssueAnalysisCard(for: flight)
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                        }
                         if editingFlightID == flight.id {
                             inlineEditForm
                                 .transition(.move(edge: .top).combined(with: .opacity))
@@ -485,17 +498,18 @@ struct QuickLogView: View {
                         Text(flight.flownAt, style: .date)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                    }
-                    .id("flight-row-\(flight.id.uuidString)")
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        guard editingFlightID != flight.id else { return }
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                            expandedFlightID = expandedFlightID == flight.id ? nil : flight.id
                         }
-                    }
-                    .padding()
-                    .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 18))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .id("flight-row-\(flight.id.uuidString)")
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            guard editingFlightID != flight.id else { return }
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                                expandedFlightID = expandedFlightID == flight.id ? nil : flight.id
+                            }
+                        }
+                        .padding()
+                        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 18))
                     }
                 }
             }
@@ -569,6 +583,15 @@ struct QuickLogView: View {
         }
         resetForm()
         showSavedConfirmation(wasEditing ? "Flight updated" : "Flight added")
+    }
+
+    private func flightDropdownButton(title: String, isExpanded: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(isExpanded ? "Hide \(title)" : title)
+                .frame(minWidth: 76)
+                .animation(.spring(response: 0.25, dampingFraction: 0.85), value: isExpanded)
+        }
+        .buttonStyle(.bordered)
     }
 
     private var inlineEditForm: some View {
@@ -857,7 +880,6 @@ struct QuickLogView: View {
         eggStatus = flight.eggStatus
         notes = FlightNoteCleaner.editableNotes(from: flight.notes)
         attachments = flight.attachments
-        expandedFlightID = flight.id
     }
 
     private func resetForm() {

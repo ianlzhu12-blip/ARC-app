@@ -62,6 +62,8 @@ struct DashboardView: View {
             }
             .scrollIndicators(.visible)
             .navigationTitle("RocketTune")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
             .onAppear {
                 store.syncLaunchWindowRemaining()
                 updateLaunchTimerLiveActivity()
@@ -105,15 +107,32 @@ struct DashboardView: View {
     }
 
     private var hero: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("American Rocketry Challenge")
-                .font(.caption.weight(.heavy))
-                .foregroundStyle(Color.arcAmber)
-                .textCase(.uppercase)
-                .tracking(2)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("American Rocketry Challenge")
+                    .font(.caption.weight(.heavy))
+                    .foregroundStyle(Color.arcAmber)
+                    .textCase(.uppercase)
+                    .tracking(2)
+                Spacer()
+                Label("Flight OS", systemImage: "antenna.radiowaves.left.and.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(Color.arcMint)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Color.arcMint.opacity(0.12), in: Capsule())
+                    .overlay(Capsule().stroke(Color.arcMint.opacity(0.28)))
+            }
             Text("RocketTune")
                 .font(.system(size: 46, weight: .black, design: .rounded))
                 .kerning(-2)
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [Color.arcText, Color.arcMint.opacity(0.92)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
             Picker("Mode", selection: Binding(
                 get: { store.flightMode },
                 set: { store.setFlightMode($0) }
@@ -135,10 +154,10 @@ struct DashboardView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            .padding()
-            .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 18))
+            .innerPanelStyle()
             HStack {
-                Text(store.isCompetitionMode ? "Target" : "Reference")
+                Label(store.isCompetitionMode ? "Target" : "Reference", systemImage: "scope")
+                    .font(.headline)
                 Spacer()
                 TextField("800", value: Binding(
                     get: { store.targetAltitudeFeet },
@@ -148,13 +167,11 @@ struct DashboardView: View {
                     .multilineTextAlignment(.trailing)
                     .frame(width: 90)
                 Text("ft")
+                    .foregroundStyle(Color.arcSubtext)
             }
-            .padding()
-            .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 18))
+            .innerPanelStyle()
         }
-        .padding(22)
-        .background(Color.white.opacity(0.075), in: RoundedRectangle(cornerRadius: 30))
-        .overlay(RoundedRectangle(cornerRadius: 30).stroke(.white.opacity(0.12)))
+        .cardStyle()
     }
 
     private var competitionCard: some View {
@@ -338,8 +355,7 @@ struct DashboardView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                .padding(10)
-                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
+                .innerPanelStyle(cornerRadius: 14)
             }
 
             if isEditingChecklist {
@@ -520,6 +536,7 @@ private struct AllFlightsView: View {
                             .buttonStyle(.bordered)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .padding()
@@ -530,6 +547,7 @@ private struct AllFlightsView: View {
                 .allowsHitTesting(false)
         }
         .navigationTitle("All Flights")
+        .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Rocket, motor, notes, egg")
         .sheet(item: $editingFlight) { flight in
             FlightEditSheet(flight: flight)
@@ -707,6 +725,7 @@ private struct FlightEditSheet: View {
                     .allowsHitTesting(false)
             }
             .navigationTitle("Edit Flight")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {

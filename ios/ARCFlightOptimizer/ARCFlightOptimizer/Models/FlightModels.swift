@@ -568,6 +568,7 @@ struct HeightTuningPoint: Identifiable {
     var predictedAltitudeFeet: Double
     var confidence: Double
     var reusableDelayDrillSeconds: Double?
+    var suggestedReefedCentimeters: Double?
 }
 
 struct UserProfile: Codable, Hashable {

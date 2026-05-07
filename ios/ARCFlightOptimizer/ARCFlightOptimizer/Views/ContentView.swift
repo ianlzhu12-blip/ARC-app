@@ -5,6 +5,12 @@ struct ContentView: View {
     @EnvironmentObject private var store: FlightStore
     @State private var selectedTab = 0
 
+    init() {
+        #if canImport(UIKit)
+        AppChrome.apply()
+        #endif
+    }
+
     var body: some View {
         Group {
             if store.needsInitialSetup {
@@ -57,6 +63,8 @@ struct ContentView: View {
         }
         .preferredColorScheme(.dark)
         .tint(Color.arcMint)
+        .fontDesign(.rounded)
+        .buttonBorderShape(.roundedRectangle(radius: 16))
     }
 }
 
