@@ -388,7 +388,7 @@ final class FlightStore: ObservableObject {
         if flight.rocketMassGrams > info.maxLiftOffMassGrams {
             reasons.append("lift-off mass above \(Int(info.maxLiftOffMassGrams)) g")
         }
-        if !MotorCatalog.competitionMotors.contains(where: { $0.designation == flight.motorDesignation }) {
+        if !MotorCatalog.competitionMotorDesignations.contains(flight.motorDesignation) {
             reasons.append("motor not on approved ARC list")
         }
 
@@ -418,10 +418,11 @@ final class FlightStore: ObservableObject {
     func bestScoredFlights(limit: Int) -> [Flight] {
         flights
             .filter { ($0.round ?? "") != FlightMode.hobby.shortTitle }
+            .map { flight in
+                (flight: flight, summary: scoreSummary(for: flight))
+            }
             .sorted {
-                let left = scoreSummary(for: $0)
-                let right = scoreSummary(for: $1)
-                switch (left.totalPoints, right.totalPoints) {
+                switch ($0.summary.totalPoints, $1.summary.totalPoints) {
                 case let (lhs?, rhs?):
                     return lhs < rhs
                 case (_?, nil):
@@ -429,11 +430,11 @@ final class FlightStore: ObservableObject {
                 case (nil, _?):
                     return false
                 case (nil, nil):
-                    return $0.flownAt > $1.flownAt
+                    return $0.flight.flownAt > $1.flight.flownAt
                 }
             }
             .prefix(limit)
-            .map { $0 }
+            .map(\.flight)
     }
 
     func scoringTargetAltitude(for flight: Flight) -> Double {

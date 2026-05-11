@@ -42,6 +42,25 @@ Then open:
 http://localhost:5173
 ```
 
+## Share As A Website / Installable App
+
+The web version is now a Progressive Web App (PWA). That means one link can run on computers, iPhones, iPads, Android phones, and Chromebooks. On phones, friends can open the link in the browser and add it to their home screen.
+
+To publish it from GitHub:
+
+1. Push this repo to GitHub.
+2. In the GitHub repo, open Settings -> Pages.
+3. Set Build and deployment to Deploy from a branch.
+4. Choose `main` and `/root`, then save.
+
+After deployment, the link will look like:
+
+```text
+https://ianlzhu12-blip.github.io/ARC-app/
+```
+
+On iPhone, open that link in Safari, tap Share, then tap Add to Home Screen. On desktop Chrome or Edge, use the Install button in the app or the browser install icon.
+
 ## GPT Spreadsheet Import
 
 The iPhone app does not store an OpenAI API key directly. For the most accurate spreadsheet conversion, run this project server with the key on your Mac or a deployed host:

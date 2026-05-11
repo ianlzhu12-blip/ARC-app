@@ -13,7 +13,6 @@ struct InsightsView: View {
     @State private var nationalsTargetText = "750"
     @State private var hobbyTargetHeight = 800.0
     @State private var hobbyMaxAltitude = false
-    @State private var selectedNationalsGraphTarget: Double?
     @State private var nationalsXCenter = 700.0
     @State private var nationalsXSpan = 200.0
     @State private var nationalsYCenter: Double?
@@ -30,7 +29,6 @@ struct InsightsView: View {
     @State private var cachedRecommendations: [Recommendation] = []
     @State private var cachedCalibrationMeanError: Double?
     @State private var cachedDataSummary = AIDataSummary.empty
-    @State private var isRefreshingInsights = false
 
     private var availableMotors: [MotorSpec] {
         MotorCatalog.motors(for: store.flightMode)
@@ -241,22 +239,19 @@ struct InsightsView: View {
     }
 
     private var insightsCalculationKey: String {
-        let flightSignature = modelFlights.map {
-            "\($0.id.uuidString.prefix(6)):\(Int($0.rocketMassGrams)):\(Int($0.measuredAltitudeFeet)):\($0.motorDesignation)"
-        }.joined(separator: "|")
         return [
             store.flightMode.rawValue,
             selectedRocketID?.uuidString ?? "all",
             predictedMotorDesignation,
             String(Int(targetAltitudeForAI.rounded())),
             String(store.aiLearningRevision),
+            String(modelFlights.count),
             String(Int(baselineMassForPrediction.rounded())),
             String(Int(baselineWeatherForPrediction.temperatureF.rounded())),
             String(Int(baselineWeatherForPrediction.windMPH.rounded())),
             String(Int(baselineWeatherForPrediction.humidityPercent.rounded())),
             String(effectiveMotorIsReloadable),
-            String(hobbyMaxAltitude),
-            flightSignature
+            String(hobbyMaxAltitude)
         ].joined(separator: "::")
     }
 
@@ -325,7 +320,7 @@ struct InsightsView: View {
                 resetNationalsInteractionState()
             }
             .task(id: insightsCalculationKey) {
-                await refreshInsightsCache()
+                await refreshInsightsCache(expectedKey: insightsCalculationKey)
             }
         }
     }
@@ -471,31 +466,6 @@ struct InsightsView: View {
         .innerPanelStyle(cornerRadius: 16)
     }
 
-    private func aiOptimization(for rocket: Rocket, motor: MotorSpec) -> OptimizationResult {
-        let weather = baselineWeatherForPrediction
-        let flights = modelFlights
-
-        if store.flightMode == .hobby, hobbyMaxAltitude {
-            return PredictionEngine.maximizeAltitude(
-                flights: flights,
-                rocket: rocket,
-                selectedMotor: motor,
-                weather: weather,
-                isReloadableMotor: effectiveMotorIsReloadable
-            )
-        }
-
-        return PredictionEngine.optimizeForTarget(
-            flights: flights,
-            rocket: rocket,
-            selectedMotor: motor,
-            weather: weather,
-            targetAltitudeFeet: targetAltitudeForAI,
-            targetFlightTimeRange: store.isCompetitionMode ? store.syncedCompetitionInfo.flightTimeRange : nil,
-            isReloadableMotor: effectiveMotorIsReloadable
-        )
-    }
-
     private func normalizeInsightsSelections() {
         if let selectedRocketID,
            !store.rockets.contains(where: { $0.id == selectedRocketID }) {
@@ -511,7 +481,6 @@ struct InsightsView: View {
             predictedMotorDesignation = firstMotor.designation
         }
 
-        selectedNationalsGraphTarget = nil
     }
 
     private var recommendationCard: some View {
@@ -658,7 +627,6 @@ struct InsightsView: View {
                             nationalsTargetText = newText
                         }
                         keepNationalsTargetVisible()
-                        selectedNationalsGraphTarget = nil
                         if !isAdjustingNationalsSlider {
                             store.updateTargetAltitude(newValue)
                         }
@@ -829,14 +797,6 @@ struct InsightsView: View {
             }
     }
 
-    private func resetNationalsChartView() {
-        nationalsXCenter = 700
-        nationalsXSpan = 200
-        nationalsYCenter = nil
-        nationalsYSpan = nil
-        selectedNationalsGraphTarget = nil
-    }
-
     private func resetNationalsInteractionState() {
         isAdjustingNationalsSlider = false
         nationalsDragStartXCenter = nil
@@ -855,13 +815,19 @@ struct InsightsView: View {
     }
 
     private func finishNationalsSliderAdjustment() {
-        store.updateTargetAltitude(nationalsTargetHeight)
         resetNationalsInteractionState()
+        store.updateTargetAltitude(nationalsTargetHeight)
     }
 
     @MainActor
-    private func refreshInsightsCache() async {
+    private func refreshInsightsCache(expectedKey: String) async {
         guard !isAdjustingNationalsSlider else { return }
+        do {
+            try await Task.sleep(nanoseconds: 140_000_000)
+        } catch {
+            return
+        }
+        guard !Task.isCancelled, expectedKey == insightsCalculationKey else { return }
 
         let flights = modelFlights
         let input = predictionInput
@@ -874,7 +840,6 @@ struct InsightsView: View {
         let hobbyMaxAltitude = hobbyMaxAltitude
         let reloadable = effectiveMotorIsReloadable
 
-        isRefreshingInsights = true
         let result = await Task.detached(priority: .utility) {
             let prediction = PredictionEngine.predict(flights: flights, input: input)
             let optimization: OptimizationResult?
@@ -921,12 +886,14 @@ struct InsightsView: View {
             return (prediction, optimization, recommendations, meanError, summary)
         }.value
 
+        guard !Task.isCancelled, expectedKey == insightsCalculationKey else {
+            return
+        }
         cachedPrediction = result.0
         cachedOptimization = result.1
         cachedRecommendations = result.2
         cachedCalibrationMeanError = result.3
         cachedDataSummary = result.4
-        isRefreshingInsights = false
     }
 
     private func keepNationalsTargetVisible() {
@@ -1026,28 +993,6 @@ struct InsightsView: View {
             TrendPoint(x: startX, y: slope * startX + intercept),
             TrendPoint(x: endX, y: slope * endX + intercept)
         ]
-    }
-
-    private func calibrationMeanError(for flights: [Flight]) -> Double? {
-        guard flights.count >= 4 else { return nil }
-        let sampledFlights = Self.downsample(flights, limit: 6)
-        let errors = sampledFlights.map { flight in
-            let input = PredictionInput(
-                motorType: flight.motorType,
-                motorDesignation: flight.motorDesignation,
-                rocketMassGrams: flight.rocketMassGrams,
-                temperatureF: flight.weather.temperatureF,
-                windMPH: flight.weather.windMPH,
-                humidityPercent: flight.weather.humidityPercent,
-                rocketMaterial: selectedRocketForInsights?.material ?? .cardboard,
-                parachuteSizeInches: flight.parachuteSizeInches,
-                rocketHeightMillimeters: selectedRocketForInsights?.heightMillimeters ?? 700,
-                rocketWidthMillimeters: selectedRocketForInsights?.widthMillimeters ?? 66
-            )
-            let predicted = PredictionEngine.predict(flights: modelFlights.filter { $0.id != flight.id }, input: input)
-            return abs(predicted.altitudeFeet - flight.measuredAltitudeFeet)
-        }
-        return errors.isEmpty ? nil : errors.reduce(0, +) / Double(errors.count)
     }
 
     nonisolated private static func computeCalibrationMeanError(for flights: [Flight], modelFlights: [Flight], rocket: Rocket?) -> Double? {
@@ -1230,15 +1175,6 @@ struct InsightsView: View {
 
     private func clamp(_ value: Double, min minimum: Double, max maximum: Double) -> Double {
         Swift.min(Swift.max(value, minimum), maximum)
-    }
-
-    private func paddedDomain(_ values: [Double], minimumPadding: Double) -> ClosedRange<Double> {
-        let finite = values.filter(\.isFinite)
-        guard let minValue = finite.min(), let maxValue = finite.max() else {
-            return 0...1
-        }
-        let padding = max(minimumPadding, (maxValue - minValue) * 0.18)
-        return (minValue - padding)...(maxValue + padding)
     }
 
     nonisolated private static func downsample<T>(_ values: [T], limit: Int) -> [T] {

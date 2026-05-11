@@ -229,11 +229,11 @@ enum PredictionEngine {
         var bestMass = currentMass
         var bestPrediction = predict(flights: targetGroupedFlights, input: baseInput)
         var bestError = abs(bestPrediction.altitudeFeet - targetAltitudeFeet)
-        var bestScore = bestError + massEvidencePenalty(
-            massGrams: bestMass,
+        let massEvidence = massEvidenceContext(
             flights: targetGroupedFlights,
             selectedMotor: selectedMotor
         )
+        var bestScore = bestError + massEvidencePenalty(massGrams: bestMass, context: massEvidence)
 
         let coarseSearch = bestMassSearchRange(for: rocket, currentMass: currentMass)
         for step in stride(from: coarseSearch.lowerBound, through: coarseSearch.upperBound, by: 25) {
@@ -251,11 +251,7 @@ enum PredictionEngine {
             )
             let prediction = predict(flights: targetGroupedFlights, input: candidate)
             let error = abs(prediction.altitudeFeet - targetAltitudeFeet)
-            let score = error + massEvidencePenalty(
-                massGrams: step,
-                flights: targetGroupedFlights,
-                selectedMotor: selectedMotor
-            )
+            let score = error + massEvidencePenalty(massGrams: step, context: massEvidence)
             if score < bestScore {
                 bestMass = step
                 bestPrediction = prediction
@@ -269,11 +265,7 @@ enum PredictionEngine {
             candidate.rocketMassGrams = step
             let prediction = predict(flights: targetGroupedFlights, input: candidate)
             let error = abs(prediction.altitudeFeet - targetAltitudeFeet)
-            let score = error + massEvidencePenalty(
-                massGrams: step,
-                flights: targetGroupedFlights,
-                selectedMotor: selectedMotor
-            )
+            let score = error + massEvidencePenalty(massGrams: step, context: massEvidence)
             if score < bestScore {
                 bestMass = step
                 bestPrediction = prediction
@@ -287,11 +279,7 @@ enum PredictionEngine {
             candidate.rocketMassGrams = step
             let prediction = predict(flights: targetGroupedFlights, input: candidate)
             let error = abs(prediction.altitudeFeet - targetAltitudeFeet)
-            let score = error + massEvidencePenalty(
-                massGrams: step,
-                flights: targetGroupedFlights,
-                selectedMotor: selectedMotor
-            )
+            let score = error + massEvidencePenalty(massGrams: step, context: massEvidence)
             if score < bestScore {
                 bestMass = step
                 bestPrediction = prediction
@@ -310,20 +298,33 @@ enum PredictionEngine {
             weather: weather,
             targetAltitudeFeet: targetAltitudeFeet
         )
+        var empiricalShareUsed: Double?
+        var usedDirectRepeat = false
         if let empiricalAnchor,
            empiricalAnchor.nearestMissFeet <= max(12, modelError + 18) {
-            let provenSetupShare = 0.30
-            bestMass = modelMass * (1 - provenSetupShare) + empiricalAnchor.massGrams * provenSetupShare
-            var blendedInput = baseInput
-            blendedInput.rocketMassGrams = bestMass
-            let blendedPrediction = predict(flights: targetGroupedFlights, input: blendedInput)
-            let blendedAltitude = blendedPrediction.altitudeFeet * (1 - provenSetupShare)
-                + empiricalAnchor.observedAltitudeFeet * provenSetupShare
-            bestPrediction = Prediction(
-                altitudeFeet: blendedAltitude.rounded(),
-                confidence: min(0.94, max(modelPrediction.confidence, empiricalAnchor.confidence * 0.92)),
-                method: "regression"
-            )
+            let provenSetupShare = empiricalAnchor.repeatStrength
+            empiricalShareUsed = provenSetupShare
+            if provenSetupShare >= 0.85 {
+                bestMass = empiricalAnchor.massGrams
+                bestPrediction = Prediction(
+                    altitudeFeet: empiricalAnchor.observedAltitudeFeet.rounded(),
+                    confidence: min(0.96, max(modelPrediction.confidence, empiricalAnchor.confidence)),
+                    method: "flight-history"
+                )
+                usedDirectRepeat = true
+            } else {
+                bestMass = modelMass * (1 - provenSetupShare) + empiricalAnchor.massGrams * provenSetupShare
+                var blendedInput = baseInput
+                blendedInput.rocketMassGrams = bestMass
+                let blendedPrediction = predict(flights: targetGroupedFlights, input: blendedInput)
+                let blendedAltitude = blendedPrediction.altitudeFeet * (1 - provenSetupShare)
+                    + empiricalAnchor.observedAltitudeFeet * provenSetupShare
+                bestPrediction = Prediction(
+                    altitudeFeet: blendedAltitude.rounded(),
+                    confidence: min(0.94, max(modelPrediction.confidence, empiricalAnchor.confidence * 0.92)),
+                    method: "regression"
+                )
+            }
             bestError = abs(bestPrediction.altitudeFeet - targetAltitudeFeet)
         }
 
@@ -354,7 +355,7 @@ enum PredictionEngine {
 
         var notes = [
             "Optimization uses past flights, selected motor impulse, airframe dimensions, parachute size, material, and current weather.",
-            "Flights with the same wanted altitude are used as a calibration anchor, capped near 30% influence so the AI model still drives most of the calculation.",
+            "Flights with the same wanted altitude are used as a calibration anchor. Near-perfect same-motor flights can repeat directly; weaker matches stay blended so the model still drives most of the calculation.",
             "Mass recommendations prefer weights close to real logged flights unless a farther mass clearly predicts better.",
             "Suggested mass is relative to an estimated ready-to-fly baseline of about \(Int(currentMass)) g."
         ]
@@ -362,8 +363,12 @@ enum PredictionEngine {
             notes.append("Using \(exactTargetGroup.count) logged flight\(exactTargetGroup.count == 1 ? "" : "s") from the \(Int(targetAltitudeFeet.rounded())) ft wanted-altitude group as the strongest calibration set.")
         }
         if let empiricalAnchor,
-           empiricalAnchor.nearestMissFeet <= max(12, modelError + 18) {
-            notes.append("Closest proven setup found \(Int(empiricalAnchor.observedAltitudeFeet.rounded())) ft at \(Int(empiricalAnchor.massGrams.rounded())) g; it blended about 30% into the final mass instead of replacing the AI result.")
+           let empiricalShareUsed {
+            if usedDirectRepeat {
+                notes.append("Near-perfect proven setup found \(Int(empiricalAnchor.observedAltitudeFeet.rounded())) ft at \(Int(empiricalAnchor.massGrams.rounded())) g, so the AI repeats that mass instead of averaging it away.")
+            } else {
+                notes.append("Closest proven setup found \(Int(empiricalAnchor.observedAltitudeFeet.rounded())) ft at \(Int(empiricalAnchor.massGrams.rounded())) g; it blended about \(Int((empiricalShareUsed * 100).rounded()))% into the final mass.")
+            }
         }
         if rocket.importedFromOpenRocket {
             notes.insert(
@@ -938,6 +943,7 @@ enum PredictionEngine {
         var confidence: Double
         var sampleCount: Int
         var nearestMissFeet: Double
+        var repeatStrength: Double
     }
 
     private static func baselineReadyMass(for rocket: Rocket, selectedMotor: MotorSpec, flights: [Flight]) -> Double {
@@ -1008,12 +1014,26 @@ enum PredictionEngine {
         guard nearest.miss <= closeEnoughFeet else { return nil }
 
         if nearest.miss <= 3 {
+            let sameMotor = nearest.flight.motorDesignation == selectedMotor.designation
             return EmpiricalMassAnchor(
                 massGrams: nearest.flight.rocketMassGrams,
                 observedAltitudeFeet: nearest.flight.measuredAltitudeFeet,
-                confidence: sameMotorFlights.isEmpty ? 0.68 : 0.82,
+                confidence: sameMotor ? 0.94 : 0.72,
                 sampleCount: 1,
-                nearestMissFeet: nearest.miss
+                nearestMissFeet: nearest.miss,
+                repeatStrength: sameMotor ? 0.92 : 0.62
+            )
+        }
+
+        if nearest.miss <= 8,
+           nearest.flight.motorDesignation == selectedMotor.designation {
+            return EmpiricalMassAnchor(
+                massGrams: nearest.flight.rocketMassGrams,
+                observedAltitudeFeet: nearest.flight.measuredAltitudeFeet,
+                confidence: 0.88,
+                sampleCount: 1,
+                nearestMissFeet: nearest.miss,
+                repeatStrength: 0.82
             )
         }
 
@@ -1029,7 +1049,8 @@ enum PredictionEngine {
             observedAltitudeFeet: altitude,
             confidence: confidence,
             sampleCount: localMatches.count,
-            nearestMissFeet: nearest.miss
+            nearestMissFeet: nearest.miss,
+            repeatStrength: min(0.48, 0.22 + Double(min(localMatches.count, 5)) * 0.045 + motorBonus)
         )
     }
 
@@ -1057,11 +1078,14 @@ enum PredictionEngine {
         return lowerBound...upperBound
     }
 
-    private static func massEvidencePenalty(
-        massGrams: Double,
+    private struct MassEvidenceContext {
+        var masses: [Double]
+    }
+
+    private static func massEvidenceContext(
         flights: [Flight],
         selectedMotor: MotorSpec
-    ) -> Double {
+    ) -> MassEvidenceContext {
         let finiteFlights = flights.filter {
             !$0.excludedFromAI &&
             $0.rocketMassGrams.isFinite &&
@@ -1071,6 +1095,14 @@ enum PredictionEngine {
             .filter { $0.motorDesignation == selectedMotor.designation }
             .map(\.rocketMassGrams)
         let masses = sameMotorMasses.isEmpty ? finiteFlights.map(\.rocketMassGrams) : sameMotorMasses
+        return MassEvidenceContext(masses: masses)
+    }
+
+    private static func massEvidencePenalty(
+        massGrams: Double,
+        context: MassEvidenceContext
+    ) -> Double {
+        let masses = context.masses
         guard masses.count >= 3 else { return 0 }
 
         let nearestMassDelta = masses.map { abs($0 - massGrams) }.min() ?? 0

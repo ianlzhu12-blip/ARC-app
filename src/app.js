@@ -301,10 +301,25 @@ class ArcFlightApp extends HTMLElement {
     this.weatherLocation = "Manassas, VA";
     this.weatherDraft = { temperatureF: 72, windMph: 6, humidityPercent: 45, location: "Manassas, VA" };
     this.weatherStatus = "Manual values remain available for offline launches.";
+    this.installPrompt = null;
+    this.installStatus = "Install this web app on iPhone, Android, Chromebook, or desktop from the same link.";
     this.timerSeconds = this.state.launchWindowMinutes * 60;
   }
 
   connectedCallback() {
+    this.beforeInstallPromptHandler = (event) => {
+      event.preventDefault();
+      this.installPrompt = event;
+      this.installStatus = "Ready to install on this device.";
+      this.render();
+    };
+    this.appInstalledHandler = () => {
+      this.installPrompt = null;
+      this.installStatus = "Installed. It will still keep flight data locally on this device.";
+      this.render();
+    };
+    window.addEventListener("beforeinstallprompt", this.beforeInstallPromptHandler);
+    window.addEventListener("appinstalled", this.appInstalledHandler);
     this.render();
     this.timer = setInterval(() => {
       if (this.state.nationalsMode && this.timerSeconds > 0) {
@@ -316,6 +331,8 @@ class ArcFlightApp extends HTMLElement {
 
   disconnectedCallback() {
     clearInterval(this.timer);
+    window.removeEventListener("beforeinstallprompt", this.beforeInstallPromptHandler);
+    window.removeEventListener("appinstalled", this.appInstalledHandler);
   }
 
   save(nextState = this.state) {
@@ -359,9 +376,11 @@ class ArcFlightApp extends HTMLElement {
             <p class="hero-copy">Log launches in seconds, track altitude trends, pull live weather by location, and get competition-ready recommendations toward your target apogee.</p>
             <div class="hero-actions">
               <button data-action="toggle-nationals">🏆 ${this.state.nationalsMode ? "Exit Nationals Mode" : "Enter Nationals Mode"}</button>
+              <button class="ghost-button" data-action="install-app">Install App</button>
               <label class="ghost-button">Import CSV<input id="csv-import" type="file" accept=".csv"></label>
               <button class="ghost-button" data-action="export-csv">Export Judge Report</button>
             </div>
+            <small class="install-hint">${this.installStatus}</small>
           </div>
           <div class="target-card">
             <span>Target altitude</span>
@@ -476,6 +495,7 @@ class ArcFlightApp extends HTMLElement {
 
   bindEvents() {
     this.querySelector('[data-action="toggle-nationals"]')?.addEventListener("click", () => this.save({ ...this.state, nationalsMode: !this.state.nationalsMode }));
+    this.querySelector('[data-action="install-app"]')?.addEventListener("click", () => this.installApp());
     this.querySelector('[data-action="reset-timer"]')?.addEventListener("click", () => {
       this.timerSeconds = this.state.launchWindowMinutes * 60;
       this.render();
@@ -506,6 +526,23 @@ class ArcFlightApp extends HTMLElement {
     this.querySelector("#team-form")?.addEventListener("submit", (event) => this.addTeam(event));
     this.querySelector("#rocket-form")?.addEventListener("submit", (event) => this.addRocket(event));
     this.querySelector("#csv-import")?.addEventListener("change", (event) => this.importCsv(event.target.files?.[0]));
+  }
+
+  async installApp() {
+    if (this.installPrompt) {
+      const prompt = this.installPrompt;
+      this.installPrompt = null;
+      prompt.prompt();
+      const choice = await prompt.userChoice;
+      this.installStatus = choice.outcome === "accepted"
+        ? "Installing. Your data will stay local to this device."
+        : "Install skipped. You can still use the app from the link.";
+      this.render();
+      return;
+    }
+
+    this.installStatus = "On iPhone or iPad: tap Share, then Add to Home Screen. On desktop: use the browser install icon.";
+    this.render();
   }
 
   getStats(flights) {
@@ -597,3 +634,11 @@ class ArcFlightApp extends HTMLElement {
 }
 
 customElements.define("arc-flight-app", ArcFlightApp);
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register(new URL("../sw.js", import.meta.url)).catch(() => {
+      // The app still works without offline caching, such as in private browsing.
+    });
+  });
+}

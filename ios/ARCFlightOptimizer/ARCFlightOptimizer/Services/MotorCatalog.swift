@@ -90,6 +90,15 @@ enum MotorCatalog {
     ]
 
     static let competitionMotors = hobbyMotors
+    static let competitionMotorDesignations = Set(competitionMotors.map(\.designation))
+
+    private static let motorsByDesignation: [String: MotorSpec] = {
+        var lookup: [String: MotorSpec] = [:]
+        for motor in hobbyMotors + competitionMotors where lookup[motor.designation] == nil {
+            lookup[motor.designation] = motor
+        }
+        return lookup
+    }()
 
     static func motors(for mode: FlightMode) -> [MotorSpec] {
         switch mode {
@@ -99,6 +108,6 @@ enum MotorCatalog {
     }
 
     static func motor(named designation: String) -> MotorSpec? {
-        (hobbyMotors + competitionMotors).first { $0.designation == designation }
+        motorsByDesignation[designation]
     }
 }

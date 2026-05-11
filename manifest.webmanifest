@@ -1,0 +1,20 @@
+{
+  "name": "ARC Flight Optimizer",
+  "short_name": "ARC Optimizer",
+  "description": "Local-first model rocket flight logging, weather, graphing, and altitude tuning for ARC practice.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#07111f",
+  "theme_color": "#07111f",
+  "categories": ["education", "sports", "utilities"],
+  "icons": [
+    {
+      "src": "./ios/ARCFlightOptimizer/ARCFlightOptimizer/Assets.xcassets/AppIcon.appiconset/Icon-1024.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

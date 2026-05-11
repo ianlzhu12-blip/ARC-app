@@ -1,55 +1,76 @@
 import SwiftUI
 
+private struct DashboardStats {
+    var averageAltitude: Double
+    var spread: Double
+    var bestFlight: Flight?
+    var bestTwo: [Flight]
+}
+
 struct DashboardView: View {
     @EnvironmentObject private var store: FlightStore
     @State private var newChecklistItem = ""
     @State private var isEditingChecklist = false
 
-    private var averageAltitude: Double {
-        store.flights.isEmpty ? 0 : store.flights.map(\.measuredAltitudeFeet).reduce(0, +) / Double(store.flights.count)
-    }
+    private func makeDashboardStats() -> DashboardStats {
+        let flights = store.flights
+        let averageAltitude: Double
+        let spread: Double
 
-    private var bestFlight: Flight? {
+        if flights.isEmpty {
+            averageAltitude = 0
+            spread = 0
+        } else {
+            var altitudeTotal = 0.0
+            var minAltitude = Double.greatestFiniteMagnitude
+            var maxAltitude = -Double.greatestFiniteMagnitude
+
+            for flight in flights {
+                let altitude = flight.measuredAltitudeFeet
+                altitudeTotal += altitude
+                minAltitude = min(minAltitude, altitude)
+                maxAltitude = max(maxAltitude, altitude)
+            }
+
+            averageAltitude = altitudeTotal / Double(flights.count)
+            spread = maxAltitude - minAltitude
+        }
+
+        let bestTwo: [Flight]
         if store.isCompetitionMode {
-            return store.bestScoredFlights(limit: 1).first
+            bestTwo = store.bestScoredFlights(limit: 2)
+        } else {
+            bestTwo = Array(
+                flights
+                    .sorted { altitudeMiss(for: $0) < altitudeMiss(for: $1) }
+                    .prefix(2)
+            )
         }
-        return store.flights.min {
-            altitudeMiss(for: $0) < altitudeMiss(for: $1)
-        }
-    }
 
-    private var spread: Double {
-        guard let minAltitude = store.flights.map(\.measuredAltitudeFeet).min(),
-              let maxAltitude = store.flights.map(\.measuredAltitudeFeet).max()
-        else { return 0 }
-        return maxAltitude - minAltitude
-    }
-
-    private var bestTwo: [Flight] {
-        if store.isCompetitionMode {
-            return store.bestScoredFlights(limit: 2)
-        }
-        return store.flights
-            .sorted { altitudeMiss(for: $0) < altitudeMiss(for: $1) }
-            .prefix(2)
-            .map { $0 }
+        return DashboardStats(
+            averageAltitude: averageAltitude,
+            spread: spread,
+            bestFlight: bestTwo.first,
+            bestTwo: bestTwo
+        )
     }
 
     var body: some View {
         NavigationStack {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 18) {
+                    let stats = makeDashboardStats()
                     hero
                     if store.flightMode == .competition {
                         competitionRulesCard
-                        competitionCard
+                        competitionCard(stats: stats)
                     }
                     if store.flightMode == .nationals {
                         competitionRulesCard
-                        nationalsCard
+                        nationalsCard(stats: stats)
                     }
                     launchChecklistCard
-                    statsGrid
+                    statsGrid(stats: stats)
                     latestFlightReview
                     recentFlights
                 }
@@ -174,13 +195,13 @@ struct DashboardView: View {
         .cardStyle()
     }
 
-    private var competitionCard: some View {
+    private func competitionCard(stats: DashboardStats) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Competition Mode", systemImage: "target")
                 .font(.headline)
             Text("Practice against the target altitude and watch your best two target matches.")
                 .foregroundStyle(.secondary)
-            ForEach(bestTwo) { flight in
+            ForEach(stats.bestTwo) { flight in
                 let summary = store.scoreSummary(for: flight)
                 HStack {
                     Text("\(Int(flight.measuredAltitudeFeet)) ft")
@@ -222,7 +243,7 @@ struct DashboardView: View {
         .cardStyle()
     }
 
-    private var nationalsCard: some View {
+    private func nationalsCard(stats: DashboardStats) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let remaining = store.launchWindowRemaining(at: context.date)
@@ -268,7 +289,7 @@ struct DashboardView: View {
             }
             Text("Best two qualifying flights")
                 .font(.headline)
-            ForEach(bestTwo) { flight in
+            ForEach(stats.bestTwo) { flight in
                 let summary = store.scoreSummary(for: flight)
                 HStack {
                     Text("\(Int(flight.measuredAltitudeFeet)) ft")
@@ -378,13 +399,13 @@ struct DashboardView: View {
         .cardStyle()
     }
 
-    private var statsGrid: some View {
+    private func statsGrid(stats: DashboardStats) -> some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-            StatTile(title: "Average", value: "\(Int(averageAltitude)) ft", subtitle: "\(store.flights.count) flights")
+            StatTile(title: "Average", value: "\(Int(stats.averageAltitude)) ft", subtitle: "\(store.flights.count) flights")
             StatTile(
                 title: "Best Match",
-                value: bestFlight.map { "\(Int($0.measuredAltitudeFeet)) ft" } ?? "None",
-                subtitle: bestFlight.map {
+                value: stats.bestFlight.map { "\(Int($0.measuredAltitudeFeet)) ft" } ?? "None",
+                subtitle: stats.bestFlight.map {
                     let summary = store.scoreSummary(for: $0)
                     if summary.isDisqualified {
                         return "disqualified"
@@ -392,7 +413,7 @@ struct DashboardView: View {
                     return summary.totalPoints.map { "\($0) points" } ?? "\(Int(altitudeMiss(for: $0))) ft off"
                 } ?? "Log a flight"
             )
-            StatTile(title: "Spread", value: "\(Int(spread)) ft", subtitle: "lower is steadier")
+            StatTile(title: "Spread", value: "\(Int(stats.spread)) ft", subtitle: "lower is steadier")
             StatTile(title: "Rockets", value: "\(store.rockets.count)", subtitle: "\(store.teams.count) teams")
         }
     }
@@ -476,12 +497,12 @@ private struct AllFlightsView: View {
     @State private var editingFlight: Flight?
     @State private var expandedFlightID: UUID?
 
-    private var filteredFlights: [Flight] {
+    private func filteredFlights(rocketNamesByID: [UUID: String]) -> [Flight] {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return store.flights }
         let query = trimmed.lowercased()
         return store.flights.filter { flight in
-            let rocketName = store.rocket(for: flight)?.name.lowercased() ?? ""
+            let rocketName = rocketNamesByID[flight.rocketID]?.lowercased() ?? ""
             return rocketName.contains(query) ||
                 flight.motorDesignation.lowercased().contains(query) ||
                 flight.notes.lowercased().contains(query) ||
@@ -490,6 +511,9 @@ private struct AllFlightsView: View {
     }
 
     var body: some View {
+        let rocketNamesByID = Dictionary(uniqueKeysWithValues: store.rockets.map { ($0.id, $0.name) })
+        let visibleFlights = filteredFlights(rocketNamesByID: rocketNamesByID)
+
         ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: 12) {
                 Text("Every manual and spreadsheet-imported flight is shown here. Imported rows stay editable from the Log screen.")
@@ -497,9 +521,9 @@ private struct AllFlightsView: View {
                     .foregroundStyle(.secondary)
                     .cardStyle()
 
-                ForEach(filteredFlights) { flight in
+                ForEach(visibleFlights) { flight in
                     VStack(alignment: .leading, spacing: 10) {
-                        DashboardFlightRow(flight: flight)
+                        DashboardFlightRow(flight: flight, rocketName: rocketNamesByID[flight.rocketID])
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
@@ -765,6 +789,7 @@ private struct FlightEditSheet: View {
 private struct DashboardFlightRow: View {
     @EnvironmentObject private var store: FlightStore
     let flight: Flight
+    var rocketName: String? = nil
 
     var body: some View {
         let summary = store.scoreSummary(for: flight)
@@ -797,8 +822,8 @@ private struct DashboardFlightRow: View {
     }
 
     private var rowSubtitle: String {
-        let rocketName = store.rocket(for: flight)?.name ?? "Unknown Rocket"
-        return "\(rocketName) • \(flight.motorDesignation) • \(formattedGrams(flight.rocketMassGrams)) • \(flight.flownAt.formatted(date: .abbreviated, time: .shortened))"
+        let displayRocketName = rocketName ?? store.rocket(for: flight)?.name ?? "Unknown Rocket"
+        return "\(displayRocketName) • \(flight.motorDesignation) • \(formattedGrams(flight.rocketMassGrams)) • \(flight.flownAt.formatted(date: .abbreviated, time: .shortened))"
     }
 
     @ViewBuilder
