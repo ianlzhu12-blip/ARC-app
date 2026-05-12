@@ -1,4 +1,4 @@
-const CACHE_NAME = "arc-flight-optimizer-v1";
+const CACHE_NAME = "arc-flight-optimizer-v2";
 
 const appShell = [
   "./",

@@ -574,7 +574,7 @@ createServer(async (request, response) => {
       return;
     }
 
-    const requested = url.pathname === "/" ? "/index.html" : url.pathname;
+    const requested = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname).replace(/^\/+/, "");
     const safePath = normalize(requested).replace(/^(\.\.[/\\])+/, "");
     const filePath = join(root, safePath);
     const body = await readFile(filePath);
