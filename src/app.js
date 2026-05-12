@@ -32,8 +32,13 @@ const defaultState = {
     email: "",
     school: "",
     teamNumber: "",
-    nationalsStatus: "unknown"
+    nationalsStatus: "unknown",
+    syncEnabled: false,
+    syncKey: ""
   },
+  deletedFlightIds: [],
+  deletedRocketIds: [],
+  updatedAt: new Date().toISOString(),
   launchWindowSeconds: 45 * 60,
   launchWindowEndsAt: null,
   launchTimerState: "stopped",
@@ -87,6 +92,9 @@ function isNationalsUnlocked(state) {
 function migrateState(raw) {
   const state = { ...defaultState, ...raw };
   state.profile = { ...defaultState.profile, ...(raw?.profile || {}) };
+  state.deletedFlightIds = Array.isArray(raw?.deletedFlightIds) ? raw.deletedFlightIds : [];
+  state.deletedRocketIds = Array.isArray(raw?.deletedRocketIds) ? raw.deletedRocketIds : [];
+  state.updatedAt = raw?.updatedAt || new Date().toISOString();
   state.flightMode = raw?.flightMode || (raw?.nationalsMode ? "nationals" : "hobby");
   state.setupComplete = Boolean(raw?.setupComplete || state.teams?.length || state.rockets?.length);
   state.teams = Array.isArray(raw?.teams) ? raw.teams : [];
@@ -138,6 +146,49 @@ function loadState() {
     }
   }
   return migrateState(defaultState);
+}
+
+function newerThan(left, right) {
+  return new Date(left || 0).getTime() > new Date(right || 0).getTime();
+}
+
+function mergeById(localItems, remoteItems, deletedIds, remoteIsNewer) {
+  const deleted = new Set(deletedIds || []);
+  const merged = new Map();
+  for (const item of localItems || []) {
+    if (item?.id && !deleted.has(item.id)) merged.set(item.id, item);
+  }
+  for (const item of remoteItems || []) {
+    if (!item?.id || deleted.has(item.id)) continue;
+    if (!merged.has(item.id) || remoteIsNewer) merged.set(item.id, item);
+  }
+  return [...merged.values()];
+}
+
+function mergeSyncedState(localState, remoteState) {
+  const local = migrateState(localState);
+  const remote = migrateState(remoteState);
+  const remoteIsNewer = newerThan(remote.updatedAt, local.updatedAt);
+  const deletedFlightIds = [...new Set([...(local.deletedFlightIds || []), ...(remote.deletedFlightIds || [])])];
+  const deletedRocketIds = [...new Set([...(local.deletedRocketIds || []), ...(remote.deletedRocketIds || [])])];
+  const profile = {
+    ...(remoteIsNewer ? local.profile : remote.profile),
+    ...(remoteIsNewer ? remote.profile : local.profile),
+    syncEnabled: local.profile.syncEnabled,
+    syncKey: local.profile.syncKey || remote.profile.syncKey
+  };
+  return migrateState({
+    ...(remoteIsNewer ? local : remote),
+    ...(remoteIsNewer ? remote : local),
+    profile,
+    teams: mergeById(local.teams, remote.teams, [], remoteIsNewer),
+    rockets: mergeById(local.rockets, remote.rockets, deletedRocketIds, remoteIsNewer),
+    flights: mergeById(local.flights, remote.flights, deletedFlightIds, remoteIsNewer),
+    checklist: mergeById(local.checklist, remote.checklist, [], remoteIsNewer),
+    deletedFlightIds,
+    deletedRocketIds,
+    updatedAt: remoteIsNewer ? remote.updatedAt : local.updatedAt
+  });
 }
 
 function featureVector(input) {
@@ -520,6 +571,9 @@ class ArcFlightApp extends HTMLElement {
     this.weatherStatus = "Manual values work offline.";
     this.installPrompt = null;
     this.installStatus = "Install from this same link on computer or phone.";
+    this.syncStatus = this.syncCredentials() ? "Sync ready." : "Register account and enable sync to share data.";
+    this.syncTimer = null;
+    this.syncInFlight = false;
   }
 
   connectedCallback() {
@@ -538,14 +592,87 @@ class ArcFlightApp extends HTMLElement {
 
   disconnectedCallback() {
     clearInterval(this.timer);
+    clearTimeout(this.syncTimer);
     window.removeEventListener("beforeinstallprompt", this.beforeInstallPromptHandler);
     window.removeEventListener("resize", this.resizeHandler);
   }
 
-  save(nextState = this.state, shouldRender = true) {
-    this.state = migrateState(nextState);
+  save(nextState = this.state, shouldRender = true, options = {}) {
+    const state = migrateState(nextState);
+    if (!options.preserveUpdatedAt) state.updatedAt = new Date().toISOString();
+    this.state = state;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
     if (shouldRender) this.render();
+    if (!options.skipSync) this.scheduleSyncPush();
+  }
+
+  syncCredentials() {
+    const email = String(this.state.profile.email || "").trim().toLowerCase();
+    const syncKey = String(this.state.profile.syncKey || "").trim();
+    if (!this.state.profile.syncEnabled || !email || syncKey.length < 8) return null;
+    return { email, syncKey };
+  }
+
+  scheduleSyncPush() {
+    const credentials = this.syncCredentials();
+    if (!credentials) return;
+    clearTimeout(this.syncTimer);
+    this.syncTimer = setTimeout(() => this.pushSync(), 900);
+  }
+
+  async pushSync() {
+    const credentials = this.syncCredentials();
+    if (!credentials || this.syncInFlight) return;
+    this.syncInFlight = true;
+    try {
+      const response = await fetch("/api/sync/push", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...credentials, state: this.state })
+      });
+      if (!response.ok) throw new Error("Sync server unavailable");
+      const result = await response.json();
+      this.syncStatus = `Synced ${new Date(result.updatedAt || Date.now()).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`;
+    } catch {
+      this.syncStatus = "Sync server unavailable. GitHub Pages cannot store account data by itself.";
+    } finally {
+      this.syncInFlight = false;
+      if (this.activeTab === "account") this.render();
+    }
+  }
+
+  async pullSync() {
+    const credentials = this.syncCredentials();
+    if (!credentials) {
+      this.syncStatus = "Register account, enable sync, and keep the same sync key on each device.";
+      this.render();
+      return;
+    }
+    this.syncStatus = "Checking cloud data...";
+    this.render();
+    try {
+      const response = await fetch("/api/sync/pull", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(credentials)
+      });
+      if (!response.ok) throw new Error("Sync server unavailable");
+      const result = await response.json();
+      if (!result.state) {
+        this.syncStatus = "No cloud copy yet. Saving this device now.";
+        this.render();
+        await this.pushSync();
+        return;
+      }
+      const merged = mergeSyncedState(this.state, result.state);
+      this.save(merged, false, { skipSync: true, preserveUpdatedAt: true });
+      this.syncStatus = "Pulled and merged cloud data.";
+      this.render();
+      this.scheduleSyncPush();
+    } catch {
+      this.syncStatus = "Sync server unavailable. Use backup export here, or iCloud sync in the iPhone app.";
+      this.render();
+    }
   }
 
   activeFlights() {
@@ -957,18 +1084,28 @@ class ArcFlightApp extends HTMLElement {
   }
 
   accountMarkup() {
+    const syncKey = this.state.profile.syncKey || "";
     return `
       <section class="split-grid">
         <article class="panel glass">
-          <div class="panel-heading"><h3>Personal Account</h3><span>Local-first</span></div>
+          <div class="panel-heading"><h3>Personal Account</h3><span>${this.state.profile.syncEnabled ? "Sync on" : "Local-first"}</span></div>
           <form id="account-form" class="form-grid two">
             <label>Name<input name="displayName" value="${escapeHTML(this.state.profile.displayName)}"></label>
             <label>Email<input name="email" type="email" value="${escapeHTML(this.state.profile.email)}"></label>
             <label>School / organization<input name="school" value="${escapeHTML(this.state.profile.school)}"></label>
             <label>Team number<input name="teamNumber" value="${escapeHTML(this.state.profile.teamNumber)}"></label>
             <label>Nationals status<select name="nationalsStatus"><option value="unknown">Unknown</option><option value="qualified" ${this.state.profile.nationalsStatus === "qualified" ? "selected" : ""}>Made Nationals</option><option value="not-qualified" ${this.state.profile.nationalsStatus === "not-qualified" ? "selected" : ""}>Not qualified</option></select></label>
+            <label class="check-row sync-toggle"><input name="syncEnabled" type="checkbox" ${this.state.profile.syncEnabled ? "checked" : ""}><span>Sync when signed in</span></label>
+            <label class="wide">Sync key<input name="syncKey" value="${escapeHTML(syncKey)}" placeholder="Auto-generated when sync is enabled"></label>
             <div class="button-row wide"><button>Save Account</button></div>
           </form>
+          <div class="button-row account-sync-actions">
+            <button class="ghost-button" data-action="generate-sync-key">Generate Sync Key</button>
+            <button class="ghost-button" data-action="pull-sync">Pull Cloud Data</button>
+            <button data-action="push-sync">Sync Now</button>
+          </div>
+          <p>${escapeHTML(this.syncStatus)}</p>
+          <p class="muted">Use the same email and sync key on another device. The iPhone app syncs through iCloud; the web version needs the Node server because GitHub Pages is static.</p>
         </article>
         <article class="panel glass">
           <div class="panel-heading"><h3>Team Backup</h3><span>${this.state.teams.length} teams</span></div>
@@ -1062,6 +1199,9 @@ class ArcFlightApp extends HTMLElement {
       button.addEventListener("click", () => this.deleteRocket(button.dataset.deleteRocket));
     });
     this.querySelector("#account-form")?.addEventListener("submit", (event) => this.saveAccount(event));
+    this.querySelector('[data-action="generate-sync-key"]')?.addEventListener("click", () => this.generateSyncKey());
+    this.querySelector('[data-action="pull-sync"]')?.addEventListener("click", () => this.pullSync());
+    this.querySelector('[data-action="push-sync"]')?.addEventListener("click", () => this.pushSync());
     this.querySelector('[data-action="export-csv"]')?.addEventListener("click", () => downloadFile("arc-flight-report.csv", flightsToCsv(this.state.flights), "text/csv"));
     this.querySelector('[data-action="backup-json"]')?.addEventListener("click", () => downloadFile("arc-flight-optimizer-backup.json", JSON.stringify(this.state, null, 2), "application/json"));
     this.querySelector("#csv-import")?.addEventListener("change", (event) => this.importCsv(event.target.files?.[0]));
@@ -1237,7 +1377,8 @@ class ArcFlightApp extends HTMLElement {
 
   deleteFlight(id) {
     this.editFlightId = this.editFlightId === id ? null : this.editFlightId;
-    this.save({ ...this.state, flights: this.state.flights.filter((flight) => flight.id !== id) });
+    const deletedFlightIds = [...new Set([...(this.state.deletedFlightIds || []), id])];
+    this.save({ ...this.state, flights: this.state.flights.filter((flight) => flight.id !== id), deletedFlightIds });
   }
 
   saveRocket(event) {
@@ -1267,21 +1408,41 @@ class ArcFlightApp extends HTMLElement {
     this.editRocketId = this.editRocketId === id ? null : this.editRocketId;
     const rockets = this.state.rockets.filter((rocket) => rocket.id !== id);
     const flights = this.state.flights.filter((flight) => flight.rocketId !== id);
-    this.save({ ...this.state, rockets, flights });
+    const deletedRocketIds = [...new Set([...(this.state.deletedRocketIds || []), id])];
+    const deletedFlightIds = [
+      ...new Set([
+        ...(this.state.deletedFlightIds || []),
+        ...this.state.flights.filter((flight) => flight.rocketId === id).map((flight) => flight.id)
+      ])
+    ];
+    this.save({ ...this.state, rockets, flights, deletedRocketIds, deletedFlightIds });
+  }
+
+  generateSyncKey() {
+    const syncKey = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    this.syncStatus = "New sync key generated. Use this same key on your other device.";
+    this.save({ ...this.state, profile: { ...this.state.profile, syncKey, syncEnabled: true } });
   }
 
   saveAccount(event) {
     event.preventDefault();
     const form = new FormData(event.target);
+    const syncEnabled = form.get("syncEnabled") === "on";
+    const existingSyncKey = this.state.profile.syncKey || "";
+    const nextSyncKey = String(form.get("syncKey") || "").trim() || (syncEnabled ? existingSyncKey || crypto.randomUUID?.() || uid() : "");
     const profile = {
       displayName: form.get("displayName") || "",
       email: form.get("email") || "",
       school: form.get("school") || "",
       teamNumber: form.get("teamNumber") || "",
-      nationalsStatus: form.get("nationalsStatus") || "unknown"
+      nationalsStatus: form.get("nationalsStatus") || "unknown",
+      syncEnabled,
+      syncKey: nextSyncKey
     };
     const flightMode = profile.nationalsStatus === "qualified" ? this.state.flightMode : (this.state.flightMode === "nationals" ? "competition" : this.state.flightMode);
+    this.syncStatus = syncEnabled ? "Account saved. Sync will run automatically." : "Account saved locally.";
     this.save({ ...this.state, profile, flightMode });
+    if (syncEnabled) this.pullSync();
   }
 
   importCsv(file) {

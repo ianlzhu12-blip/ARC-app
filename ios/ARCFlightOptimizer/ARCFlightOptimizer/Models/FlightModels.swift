@@ -491,9 +491,9 @@ struct CloudSyncSettings: Codable, Hashable {
     var statusText: String {
         guard enabled else { return "iCloud sync is off." }
         if let lastSyncAt {
-            return "iCloud sync is on. Last saved \(lastSyncAt.formatted(date: .abbreviated, time: .shortened))."
+            return "iCloud auto sync is on. Last synced \(lastSyncAt.formatted(date: .abbreviated, time: .shortened))."
         }
-        return "iCloud sync is on. Save this logbook to iCloud to make it available to your Apple ID."
+        return "iCloud auto sync is on. The next saved change will upload this logbook to your Apple ID."
     }
 }
 

@@ -1,10 +1,12 @@
 import { createServer } from "node:http";
 import { extname, join, normalize } from "node:path";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 const root = process.cwd();
 const port = Number(process.env.PORT || 5173);
 const openAIModel = process.env.OPENAI_MODEL || "gpt-5";
+const syncRoot = join(root, ".arc-sync");
 const types = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -19,6 +21,41 @@ const types = {
 function sendJSON(response, status, payload) {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload));
+}
+
+function syncWorkspaceID(email, syncKey) {
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const normalizedKey = String(syncKey || "").trim();
+  if (!normalizedEmail || normalizedKey.length < 8) return null;
+  return createHash("sha256").update(`${normalizedEmail}:${normalizedKey}`).digest("hex");
+}
+
+async function readSyncWorkspace(email, syncKey) {
+  const id = syncWorkspaceID(email, syncKey);
+  if (!id) return { status: 400, payload: { error: "Enter an email and sync key first." } };
+  try {
+    const text = await readFile(join(syncRoot, `${id}.json`), "utf8");
+    return { status: 200, payload: JSON.parse(text) };
+  } catch {
+    return { status: 200, payload: { state: null, updatedAt: null } };
+  }
+}
+
+async function writeSyncWorkspace(email, syncKey, state) {
+  const id = syncWorkspaceID(email, syncKey);
+  if (!id) return { status: 400, payload: { error: "Enter an email and sync key first." } };
+  if (!state || typeof state !== "object") return { status: 400, payload: { error: "Missing sync data." } };
+  const payload = {
+    state,
+    updatedAt: state.updatedAt || new Date().toISOString()
+  };
+  const text = JSON.stringify(payload);
+  if (Buffer.byteLength(text, "utf8") > 4_500_000) {
+    return { status: 413, payload: { error: "Sync data is too large for this lightweight server." } };
+  }
+  await mkdir(syncRoot, { recursive: true });
+  await writeFile(join(syncRoot, `${id}.json`), text, "utf8");
+  return { status: 200, payload: { ok: true, updatedAt: payload.updatedAt } };
 }
 
 async function readJSONBody(request) {
@@ -571,6 +608,20 @@ createServer(async (request, response) => {
         reasoning: "Server endpoint is connected. Add OPENAI_API_KEY on the server to enable OpenAI-powered recommendations.",
         source: "local-placeholder"
       });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/sync/pull") {
+      const body = await readJSONBody(request);
+      const result = await readSyncWorkspace(body.email, body.syncKey);
+      sendJSON(response, result.status, result.payload);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/sync/push") {
+      const body = await readJSONBody(request);
+      const result = await writeSyncWorkspace(body.email, body.syncKey, body.state);
+      sendJSON(response, result.status, result.payload);
       return;
     }
 

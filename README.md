@@ -61,6 +61,12 @@ https://ianlzhu12-blip.github.io/ARC-app/
 
 On iPhone, open that link in Safari, tap Share, then tap Add to Home Screen. On desktop Chrome or Edge, use the Install button in the app or the browser install icon.
 
+## Account Sync
+
+The native iPhone app uses iCloud sync. After a personal account is registered and iCloud sync is enabled, new flights, edits, rockets, account changes, and team data automatically save to iCloud and merge back on devices signed into the same Apple ID.
+
+The web version can sync when it is hosted with the included Node server. In Account, enable sync, keep the generated sync key, and use the same email plus sync key on another device. GitHub Pages is static, so it can run the app but cannot store account data by itself; use the Node server for web cloud sync.
+
 ## GPT Spreadsheet Import
 
 The iPhone app does not store an OpenAI API key directly. For the most accurate spreadsheet conversion, run this project server with the key on your Mac or a deployed host:
@@ -101,7 +107,7 @@ If your shell does not have `node` on the path in Codex, use the bundled runtime
 - `index.html` mounts the app.
 - `src/app.js` contains the Web Component app, local storage, prediction engine, recommendations, weather lookup, CSV import/export, and canvas charts.
 - `src/styles.css` contains the responsive, dark-mode, competition-readable UI.
-- `server.mjs` serves the static app locally and exposes optional AI endpoints for flight-sheet parsing and rocket recommendations.
+- `server.mjs` serves the static app locally and exposes optional AI endpoints plus lightweight account-sync endpoints.
 
 ## Prediction Logic
 

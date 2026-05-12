@@ -22,6 +22,9 @@ final class FlightStore: ObservableObject {
     private let iCloudStorageKey = "arc-flight-optimizer-icloud-state-v1"
     private var didAttemptAutomaticSync = false
     private var pendingSaveTask: Task<Void, Never>?
+    private var pendingCloudSyncTask: Task<Void, Never>?
+    private var iCloudObserver: NSObjectProtocol?
+    private var lastSnapshotUpdatedAt: Date = .distantPast
     static let defaultLaunchChecklistItems = [
         LaunchChecklistItem(title: "Confirm launch site weather"),
         LaunchChecklistItem(title: "Verify motor and delay"),
@@ -32,6 +35,19 @@ final class FlightStore: ObservableObject {
 
     init() {
         load()
+        startICloudObservation()
+        NSUbiquitousKeyValueStore.default.synchronize()
+        if shouldAutoSyncToICloud {
+            _ = mergeFromICloudIfAvailable(replaceExisting: true)
+        }
+    }
+
+    deinit {
+        pendingSaveTask?.cancel()
+        pendingCloudSyncTask?.cancel()
+        if let iCloudObserver {
+            NotificationCenter.default.removeObserver(iCloudObserver)
+        }
     }
 
     var activeRocket: Rocket? {
@@ -519,13 +535,15 @@ final class FlightStore: ObservableObject {
         save()
     }
 
-    func save(immediate: Bool = false) {
+    func save(immediate: Bool = false, skipCloudSync: Bool = false) {
         let snapshot = currentSnapshot()
+        lastSnapshotUpdatedAt = snapshot.updatedAt ?? Date()
         let key = storageKey
         pendingSaveTask?.cancel()
         if immediate {
-            if let data = try? JSONEncoder.arc.encode(snapshot) {
-                UserDefaults.standard.set(data, forKey: key)
+            persistLocalSnapshot(snapshot)
+            if !skipCloudSync {
+                scheduleCloudSync(immediate: true)
             }
             return
         }
@@ -536,13 +554,59 @@ final class FlightStore: ObservableObject {
                 UserDefaults.standard.set(data, forKey: key)
             }
         }
+        if !skipCloudSync {
+            scheduleCloudSync()
+        }
+    }
+
+    private var shouldAutoSyncToICloud: Bool {
+        personalAccount.isRegistered && cloudSyncSettings.enabled
+    }
+
+    private func persistLocalSnapshot(_ snapshot: StoreSnapshot) {
+        if let data = try? JSONEncoder.arc.encode(snapshot) {
+            UserDefaults.standard.set(data, forKey: storageKey)
+        }
+    }
+
+    private func scheduleCloudSync(immediate: Bool = false) {
+        guard shouldAutoSyncToICloud else { return }
+        pendingCloudSyncTask?.cancel()
+        if immediate {
+            _ = writeCurrentSnapshotToICloud()
+            return
+        }
+        pendingCloudSyncTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 850_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                _ = self?.writeCurrentSnapshotToICloud()
+            }
+        }
+    }
+
+    @discardableResult
+    private func writeCurrentSnapshotToICloud(requireRegisteredAccount: Bool = true) -> Bool {
+        guard cloudSyncSettings.enabled, !requireRegisteredAccount || personalAccount.isRegistered else { return false }
+        cloudSyncSettings.enabled = true
+        cloudSyncSettings.providerName = "iCloud"
+        cloudSyncSettings.workspaceID = personalAccount.email.isEmpty ? cloudSyncSettings.workspaceID : personalAccount.email
+        cloudSyncSettings.lastSyncAt = Date()
+        let snapshot = currentSnapshot()
+        guard let data = try? JSONEncoder.arc.encode(snapshot) else { return false }
+        let keyValueStore = NSUbiquitousKeyValueStore.default
+        keyValueStore.set(data, forKey: iCloudStorageKey)
+        keyValueStore.synchronize()
+        lastSnapshotUpdatedAt = snapshot.updatedAt ?? Date()
+        persistLocalSnapshot(snapshot)
+        return true
     }
 
     private func recordAILearningInput() {
         aiLearningRevision &+= 1
     }
 
-    private func currentSnapshot() -> StoreSnapshot {
+    private func currentSnapshot(updatedAt: Date = Date()) -> StoreSnapshot {
         let snapshot = StoreSnapshot(
             teams: teams,
             rockets: rockets,
@@ -558,12 +622,14 @@ final class FlightStore: ObservableObject {
             syncedCompetitionInfo: syncedCompetitionInfo,
             nationalsLookup: nationalsLookup,
             cloudSyncSettings: cloudSyncSettings,
-            aiLearningRevision: aiLearningRevision
+            aiLearningRevision: aiLearningRevision,
+            updatedAt: updatedAt
         )
         return snapshot
     }
 
     private func applySnapshot(_ snapshot: StoreSnapshot) {
+        lastSnapshotUpdatedAt = snapshot.updatedAt ?? Date()
         teams = snapshot.teams
         rockets = snapshot.rockets
         flights = snapshot.flights
@@ -588,22 +654,39 @@ final class FlightStore: ObservableObject {
         }
     }
 
-    private func mergeSnapshot(_ snapshot: StoreSnapshot) -> (teams: Int, rockets: Int, flights: Int) {
+    private func mergeSnapshot(_ snapshot: StoreSnapshot, replaceExisting: Bool = false) -> (teams: Int, rockets: Int, flights: Int) {
         let teamIDs = Set(teams.map(\.id))
         let rocketIDs = Set(rockets.map(\.id))
         let flightIDs = Set(flights.map(\.id))
         let newTeams = snapshot.teams.filter { !teamIDs.contains($0.id) }
         let newRockets = snapshot.rockets.filter { !rocketIDs.contains($0.id) }
         let newFlights = snapshot.flights.filter { !flightIDs.contains($0.id) }
+        if replaceExisting {
+            for team in snapshot.teams where teamIDs.contains(team.id) {
+                if let index = teams.firstIndex(where: { $0.id == team.id }) {
+                    teams[index] = team
+                }
+            }
+            for rocket in snapshot.rockets where rocketIDs.contains(rocket.id) {
+                if let index = rockets.firstIndex(where: { $0.id == rocket.id }) {
+                    rockets[index] = rocket
+                }
+            }
+            for flight in snapshot.flights where flightIDs.contains(flight.id) {
+                if let index = flights.firstIndex(where: { $0.id == flight.id }) {
+                    flights[index] = flight
+                }
+            }
+        }
         teams.append(contentsOf: newTeams)
         rockets.append(contentsOf: newRockets)
         flights.append(contentsOf: newFlights)
         flights.sort { $0.flownAt > $1.flownAt }
 
-        if profile.schoolOrganization.isEmpty, let importedProfile = snapshot.profile {
+        if (replaceExisting || profile.schoolOrganization.isEmpty), let importedProfile = snapshot.profile {
             profile = importedProfile
         }
-        if !personalAccount.isRegistered, let importedAccount = snapshot.personalAccount {
+        if (!personalAccount.isRegistered || replaceExisting), let importedAccount = snapshot.personalAccount {
             personalAccount = importedAccount
         }
         if let info = snapshot.syncedCompetitionInfo, info.seasonYear >= syncedCompetitionInfo.seasonYear {
@@ -613,7 +696,48 @@ final class FlightStore: ObservableObject {
             nationalsLookup = sanitizedNationalsLookup(snapshot.nationalsLookup)
         }
         aiLearningRevision = max(aiLearningRevision, snapshot.aiLearningRevision ?? 0) &+ 1
+        lastSnapshotUpdatedAt = max(lastSnapshotUpdatedAt, snapshot.updatedAt ?? Date())
         return (newTeams.count, newRockets.count, newFlights.count)
+    }
+
+    private func startICloudObservation() {
+        iCloudObserver = NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: NSUbiquitousKeyValueStore.default,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.shouldAutoSyncToICloud else { return }
+                if self.mergeFromICloudIfAvailable(replaceExisting: true) {
+                    self.save(immediate: true)
+                }
+            }
+        }
+    }
+
+    @discardableResult
+    private func mergeFromICloudIfAvailable(replaceExisting: Bool) -> Bool {
+        let keyValueStore = NSUbiquitousKeyValueStore.default
+        keyValueStore.synchronize()
+        guard
+            let data = keyValueStore.data(forKey: iCloudStorageKey),
+            let snapshot = try? JSONDecoder.arc.decode(StoreSnapshot.self, from: data)
+        else {
+            return false
+        }
+        let remoteUpdatedAt = snapshot.updatedAt ?? snapshot.cloudSyncSettings?.lastSyncAt ?? .distantPast
+        let hasLocalData = !teams.isEmpty || !rockets.isEmpty || !flights.isEmpty
+        guard !hasLocalData || remoteUpdatedAt >= lastSnapshotUpdatedAt else {
+            return false
+        }
+        _ = mergeSnapshot(snapshot, replaceExisting: replaceExisting)
+        cloudSyncSettings = CloudSyncSettings(
+            enabled: true,
+            providerName: "iCloud",
+            workspaceID: personalAccount.email,
+            lastSyncAt: Date()
+        )
+        return true
     }
 
     private func load() {
@@ -650,6 +774,17 @@ final class FlightStore: ObservableObject {
 
         if personalAccount.isRegistered, let teamID = teams.first?.id {
             ensureAccountMember(on: teamID)
+        }
+        if personalAccount.isRegistered {
+            let signedInAccount = personalAccount
+            cloudSyncSettings = CloudSyncSettings(
+                enabled: true,
+                providerName: "iCloud",
+                workspaceID: personalAccount.email,
+                lastSyncAt: cloudSyncSettings.lastSyncAt
+            )
+            _ = mergeFromICloudIfAvailable(replaceExisting: true)
+            personalAccount = signedInAccount
         }
         save()
     }
@@ -762,41 +897,30 @@ final class FlightStore: ObservableObject {
             workspaceID: workspaceID.trimmingCharacters(in: .whitespacesAndNewlines),
             lastSyncAt: enabled ? Date() : cloudSyncSettings.lastSyncAt
         )
+        if enabled {
+            _ = mergeFromICloudIfAvailable(replaceExisting: true)
+        }
         save()
     }
 
     func saveToICloud() -> String {
-        guard let data = try? JSONEncoder.arc.encode(currentSnapshot()) else {
-            return "Could not prepare the logbook for iCloud."
-        }
-        let keyValueStore = NSUbiquitousKeyValueStore.default
-        keyValueStore.set(data, forKey: iCloudStorageKey)
-        keyValueStore.synchronize()
         cloudSyncSettings = CloudSyncSettings(
             enabled: true,
             providerName: "iCloud",
             workspaceID: personalAccount.email.isEmpty ? "RocketTune" : personalAccount.email,
             lastSyncAt: Date()
         )
-        save()
-        return "Saved this logbook to iCloud."
+        return writeCurrentSnapshotToICloud(requireRegisteredAccount: false)
+            ? "Saved and synced this logbook to iCloud."
+            : "Could not prepare the logbook for iCloud."
     }
 
     func loadFromICloud() -> String {
-        let keyValueStore = NSUbiquitousKeyValueStore.default
-        keyValueStore.synchronize()
-        guard
-            let data = keyValueStore.data(forKey: iCloudStorageKey),
-            let snapshot = try? JSONDecoder.arc.decode(StoreSnapshot.self, from: data)
-        else {
-            return "No RocketTune logbook was found in iCloud for this Apple ID."
+        if mergeFromICloudIfAvailable(replaceExisting: true) {
+            save(immediate: true)
+            return "Loaded and merged the iCloud logbook onto this iPhone."
         }
-        applySnapshot(snapshot)
-        cloudSyncSettings.enabled = true
-        cloudSyncSettings.providerName = "iCloud"
-        cloudSyncSettings.lastSyncAt = Date()
-        save()
-        return "Loaded the iCloud logbook onto this iPhone."
+        return "No newer RocketTune logbook was found in iCloud for this Apple ID."
     }
 
     func exportTeamBackupText() -> String {
@@ -882,6 +1006,7 @@ private struct StoreSnapshot: Codable {
     var nationalsLookup: NationalsLookupResult?
     var cloudSyncSettings: CloudSyncSettings?
     var aiLearningRevision: Int?
+    var updatedAt: Date?
 }
 
 extension JSONEncoder {

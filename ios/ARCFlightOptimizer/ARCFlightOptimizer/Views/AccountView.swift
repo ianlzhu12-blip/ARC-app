@@ -300,14 +300,16 @@ struct AccountView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("iCloud Sync")
                 .font(.title3.bold())
-            Text("Save and load your RocketTune logbook with iCloud. This is best for your own devices signed into the same Apple ID.")
+            Text("When your personal account is registered and iCloud sync is on, RocketTune automatically saves changes and merges data from your other Apple devices.")
                 .foregroundStyle(.secondary)
             Toggle("Use iCloud for this logbook", isOn: $cloudEnabled)
 
             VStack(spacing: 10) {
                 Button {
                     store.configureCloudSync(enabled: cloudEnabled, providerName: "iCloud", workspaceID: store.personalAccount.email)
-                    statusMessage = store.cloudSyncSettings.statusText
+                    statusMessage = cloudEnabled
+                        ? "Auto sync is on. New flights, edits, rockets, and account changes will sync through iCloud."
+                        : "iCloud auto sync is off."
                 } label: {
                     Label("Save iCloud Setting", systemImage: "icloud")
                         .frame(maxWidth: .infinity)
@@ -339,6 +341,11 @@ struct AccountView: View {
             Text(store.cloudSyncSettings.statusText)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            if !store.personalAccount.isRegistered {
+                Text("Register your personal account above before automatic sync starts.")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color.arcAmber)
+            }
         }
         .cardStyle()
     }

@@ -475,6 +475,24 @@ small {
   color: var(--soft);
 }
 
+.sync-toggle {
+  min-height: 63px;
+  align-self: end;
+}
+
+.sync-toggle input {
+  width: auto;
+}
+
+.account-sync-actions {
+  margin-top: 14px;
+}
+
+.muted {
+  color: var(--soft);
+  font-size: 0.92rem;
+}
+
 .weather-card {
   margin-bottom: 18px;
 }
